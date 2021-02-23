@@ -90,7 +90,7 @@ var
     end;
 var
   aconn: TAsyncConnection;
-  alen,p:integer;
+  alen:integer;
   aframe:RawUtf8;
 begin
   result := sorContinue;
@@ -139,7 +139,7 @@ begin
         end;
      mtSUBSCRIBE:
         begin
-
+          mqtt_readTopic(temp,FSubTitle);
         end;
   end;
 end;

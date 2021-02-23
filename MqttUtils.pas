@@ -37,7 +37,7 @@ type
 
 const
   CON_MQTT_MAXBYTE = 2048;
-
+  CON_MQTT_MAXSUB = 5;
   MQTT_PROTOCOLV3   = 'MQIsdp';
   MQTT_VERSION3    = 3;
   MQTT_VERSIONLEN3    = 6;
@@ -94,6 +94,7 @@ type
   end;
 
 function mqtt_readstr(p:Pointer;leftlen:integer;out sstr:RawUtf8):integer;
+function mqtt_readTopic(const buf:RawUtf8;out topics:TRawUtf8DynArray):boolean;
 
 implementation
 
@@ -142,6 +143,27 @@ begin
   SetLength(sstr,alen);
   MoveFast(p^,sstr[1],alen);
   Result := alen + 2;
+end;
+
+function mqtt_readTopic(const buf:RawUtf8;out topics:TRawUtf8DynArray):boolean;
+var
+  temp:RawUtf8;
+  t,m,n:integer;
+begin
+  Result := false;
+  t := 1;
+  m := 0;
+  repeat
+    n := mqtt_readstr(@buf[t],length(buf)-t,temp);
+    if n=0 then break;
+    SetLength(topics,m+1);
+    topics[m] := temp;
+    inc(m,1);
+    if m >= CON_MQTT_MAXSUB then
+      exit;
+    inc(t,n);
+  until (t>length(buf));
+  Result := t>0;
 end;
 
 { TMqttSocket }
