@@ -16,7 +16,7 @@ uses
   MqttServer;
 
 type  
-  TRestHttpServer = class(TSynPersistentLock)
+  TRestMqttServer = class(TSynPersistentLock)
   protected
     fShutdownInProgress: boolean;
     fHttpServer: TMqttServer;
@@ -42,7 +42,7 @@ implementation
 
 { TRestHttpServer }
 
-constructor TRestHttpServer.Create(const aPort: RawUtf8;
+constructor TRestMqttServer.Create(const aPort: RawUtf8;
   aThreadPoolCount: Integer; const aQueueName: SynUnicode;
   aHeadersUnFiltered: boolean);
 var
@@ -59,23 +59,23 @@ begin
   log.Log(sllHttp, '% initialized for %', [fHttpServer, 'adb'], self);
 end;
 
-destructor TRestHttpServer.Destroy;
+destructor TRestMqttServer.Destroy;
 begin
 
   inherited;
 end;
 
-procedure TRestHttpServer.HttpThreadStart(Sender: TThread);
+procedure TRestMqttServer.HttpThreadStart(Sender: TThread);
 begin
 
 end;
 
-procedure TRestHttpServer.HttpThreadTerminate(Sender: TThread);
+procedure TRestMqttServer.HttpThreadTerminate(Sender: TThread);
 begin
 
 end;
 
-procedure TRestHttpServer.Shutdown(noRestServerShutdown: boolean);
+procedure TRestMqttServer.Shutdown(noRestServerShutdown: boolean);
 begin
 
 end;
