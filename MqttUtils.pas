@@ -94,7 +94,9 @@ type
   end;
 
 function mqtt_readstr(p:Pointer;leftlen:integer;out sstr:RawUtf8):integer;
-function mqtt_readTopic(const buf:RawUtf8;out topics:TRawUtf8DynArray):boolean;
+function mqtt_readTopic(const buf:RawByteString;out topics:TRawUtf8DynArray):integer;
+
+function mqtt_get_subAck(identifierid:word;returnCode:RawUtf8):RawUtf8;
 
 implementation
 
@@ -122,13 +124,23 @@ begin
   until (alen = 0);
 end;
 
-function mqtt_get_conack(returCode:Byte):RawUtf8;
+function mqtt_get_conAck(returCode:Byte):RawUtf8;
 begin
   SetLength(Result,4);
   Result[1] := mqtt_gethdr(mtCONNACK, false, qtAT_MOST_ONCE, false);
   mqtt_add_lenth(@Result[2],2);
   Result[3] := #0;
   Result[4] := AnsiChar(returCode);
+end;
+
+function mqtt_get_subAck(identifierid:word;returnCode:RawUtf8):RawUtf8;
+begin
+  SetLength(Result,4);
+  Result[1] := mqtt_gethdr(mtSUBACK, false, qtAT_MOST_ONCE, false);
+  mqtt_add_lenth(@Result[2],length(returnCode)+2);
+  Result[3] := AnsiChar(identifierid shr 8);
+  Result[4] := AnsiChar(identifierid and $ff);
+  Result := Result + returnCode;
 end;
 
 function mqtt_readstr(p:Pointer;leftlen:integer;out sstr:RawUtf8):integer;
@@ -145,25 +157,30 @@ begin
   Result := alen + 2;
 end;
 
-function mqtt_readTopic(const buf:RawUtf8;out topics:TRawUtf8DynArray):boolean;
+function mqtt_readTopic(const buf:RawByteString;out topics:TRawUtf8DynArray):Integer;
 var
   temp:RawUtf8;
-  t,m,n:integer;
+  t,n:integer;
+  mQos:byte;
 begin
-  Result := false;
+  Result := 0;
   t := 1;
-  m := 0;
   repeat
-    n := mqtt_readstr(@buf[t],length(buf)-t,temp);
+    n := mqtt_readstr(@buf[t],length(buf)-t + 1,temp);
     if n=0 then break;
-    SetLength(topics,m+1);
-    topics[m] := temp;
-    inc(m,1);
-    if m >= CON_MQTT_MAXSUB then
+    SetLength(topics,Result+1);
+    topics[Result] := temp;
+    inc(Result);
+    if Result >= CON_MQTT_MAXSUB then
+    begin
+      Result := -2;
       exit;
+    end;
     inc(t,n);
+     // qos byte
+    mQos := ord(buf[t]);
+    inc(t);
   until (t>length(buf));
-  Result := t>0;
 end;
 
 { TMqttSocket }
@@ -194,8 +211,8 @@ var
            Result := -1;
            exit;
         end;
-        inc(bitx,8);
-        if bitx>32 then
+        inc(bitx,7);
+        if bitx>21 then
         begin
            Result := -2;
            exit;
