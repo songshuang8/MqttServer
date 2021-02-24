@@ -29,19 +29,24 @@ type
   TMQTTConnection = class(TAsyncConnection)
   protected
     FLeftBuf:RawUtf8;
-    FSubTitle:TRawUtf8DynArray;
+    FSubTitle:TShortStringDynArray;
+    FErrorCount:Integer;
     function DoParse(Sender: TAsyncConnections;mStart:Integer):integer;
     function OnRead(
       Sender: TAsyncConnections): TPollAsyncSocketOnRead; override;
     procedure BeforeDestroy(Sender: TAsyncConnections); override;
+    procedure OnLastOperationIdle(Sender: TAsyncConnections);override;
 
     procedure WriteSelfAck(Sender: TAsyncConnections;p:Pointer;len:integer);
     procedure WriteSelfAck2(Sender: TAsyncConnections;p:RawByteString);
-    procedure WritePublic(Sender: TAsyncConnections;t,body:RawByteString);
+    procedure WritePublic(Sender: TAsyncConnections;t,c:RawByteString);
+  public
+    constructor Create(const aRemoteIP: RawUtf8); override;
   end;
 
   TMQTTServer = class(TAsyncServer)
   protected
+    fBlackBook:TRawUtf8List;
     function ConnectionCreate(aSocket: TNetSocket; const aRemoteIp: RawUtf8;
       out aConnection: TAsyncConnection): boolean; override;
   public
@@ -59,69 +64,53 @@ uses MqttUtils;
 
 { TPostConnection }
 
+procedure TMQTTConnection.OnLastOperationIdle(Sender: TAsyncConnections);
+begin
+  inherited;
+
+end;
+
 function TMQTTConnection.OnRead(
   Sender: TAsyncConnections): TPollAsyncSocketOnRead;
 var
   alen,lenwid:integer;
-    procedure _getframelen;
-    var
-      bitx,achar:byte;
-    begin
-      alen := 0;
-      bitx := 0;
-      lenwid := 0;
-      repeat
-        if (lenwid+2)>length(fSlot.readbuf) then
-        begin
-          alen := -3;
-          exit;
-        end;
-        achar := ord(fSlot.readbuf[lenwid+2]);
-        inc(alen,(achar AND $7f) shl bitx);
-        if alen>CON_MQTT_MAXBYTE then
-        begin
-           alen := -1;
-           exit;
-        end;
-        inc(bitx,7);
-        if bitx>21 then
-        begin
-           alen := -2;
-           exit;
-        end;
-        inc(lenwid);
-      until ( (achar and $80)=0);
-    end;
-var
-  aframe:RawUtf8;
 begin
   result := sorContinue;
   if Length(fSlot.readbuf)<2 then
     exit;
-
-  _getframelen;
+  Sender.Log.Add.Log(sllCustom1, 'OnRead %',[BinToHex(fSlot.readbuf)], self);
+  alen := mqtt_getframelen(@fSlot.readbuf[2],length(fSlot.readbuf)-1,lenwid);
   if (alen = -3) or (alen>length(fSlot.readbuf)) then
+  begin
      exit
-  else  if alen < 0 then
+  end else
+  if alen < 0 then
   begin
    fSlot.readbuf := '';
+   inc(FErrorCount);
    exit;
   end;
-  DoParse(Sender,lenwid+2);
+  if DoParse(Sender,lenwid+2)>=0 then
+    FErrorCount := 0
+  else
+    inc(FErrorCount);
   fSlot.readbuf := '';
 end;
 
-procedure TMQTTConnection.WritePublic(Sender: TAsyncConnections; t,body: RawByteString);
+procedure TMQTTConnection.WritePublic(Sender: TAsyncConnections; t,c: RawByteString);
 var
   i:integer;
   aconn: TMQTTConnection;
+  frame:RawByteString;
 begin
+  frame := #$30 + mqtt_get_lenth(length(t)+length(c)+2) + mqtt_get_strlen(length(t)) + t + c;
   Sender.Lock;
   try
     for i := 0 to Sender.ConnectionCount-1 do
     begin
       aconn := Sender.Connection[i] as TMQTTConnection;
-      Sender.Write(aconn, body);
+      if mqtt_compareTitle(t,aconn.FSubTitle) then
+        Sender.Write(aconn, frame);
     end;
   finally
     Sender.Unlock;
@@ -165,12 +154,17 @@ begin
   inherited BeforeDestroy(Sender);
 end;
 
+constructor TMQTTConnection.Create(const aRemoteIP: RawUtf8);
+begin
+  inherited;
+  FErrorCount := 0;
+end;
+
 function TMQTTConnection.DoParse(Sender: TAsyncConnections;mStart:Integer):Integer;
 var
-  identifierid:word;
   identistrid:RawByteString;
   i,ret,tag:integer;
-  t:RawUtf8;
+  t:RawByteString;
 begin
   Result := 0;
   case TMQTTMessageType(ord(fSlot.readbuf[1]) shr 4) of
@@ -193,22 +187,20 @@ begin
             Result := -1;
             exit;
           end;
-          ret := mqtt_readstr(@fSlot.readbuf[mStart],length(fSlot.readbuf)-mStart+1,t);
+          Delete(fSlot.readbuf,1,mStart-1);
+          ret := mqtt_readstr(@fSlot.readbuf[1],length(fSlot.readbuf),t);
           if ret=0 then exit;
-          i := mStart + ret;
+          Delete(fSlot.readbuf,1,ret);
           if (tag  and 3)>0 then
           begin
-            identistrid := fSlot.readbuf[i] + fSlot.readbuf[i+1];
-            Delete(fSlot.readbuf,i,2);
+            identistrid := fSlot.readbuf[1] + fSlot.readbuf[2];
+            Delete(fSlot.readbuf,1,2);
           end;
-          if length(fSlot.readbuf)-i+1=0 then
+          if length(fSlot.readbuf)=0 then
             exit;
-          fSlot.readbuf[1] := AnsiChar($30);
           WritePublic(Sender,t,fSlot.readbuf);
           if (tag  and 3)>0 then
-          begin
             WriteSelfAck2(Sender,#$40#02+identistrid);
-          end;
         end;
      mtSUBSCRIBE:
         begin
@@ -217,7 +209,7 @@ begin
             Result := -1; //error found close it
             exit;
           end;
-          identifierid := ord(fSlot.readbuf[mStart]) shl 8 + ord(fSlot.readbuf[mStart+1]);
+          identistrid := fSlot.readbuf[mStart] + fSlot.readbuf[mStart+1];
           inc(mStart);
           Delete(fSlot.readbuf,1,mStart);
           ret := mqtt_readTopic(fSlot.readbuf,FSubTitle);
@@ -226,7 +218,7 @@ begin
             t := '';
             for i := 0 to ret-1 do
               t := t + #2;
-            WriteSelfAck2(Sender,mqtt_get_subAck(identifierid,t));
+            WriteSelfAck2(Sender,mqtt_get_subAck(identistrid,t));
             Result := 1;
           end;
         end;
@@ -240,6 +232,7 @@ constructor TMQTTServer.Create(
   const aOnStart, aOnStop: TOnNotifyThread; aOptions: TAsyncConnectionsOptions);
 begin
   fLog := aLog;
+  fBlackBook := TRawUtf8List.Create([fObjectsOwned, fCaseSensitive]);
   inherited Create(
     aHttpPort, aOnStart, aOnStop, TMQTTConnection, 'rtsp/http', aLog, aOptions);
 end;

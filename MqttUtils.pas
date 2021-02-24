@@ -79,26 +79,65 @@ const
 type
   TMqttSocket = class(TCrtSocket)
   protected
-    FUser,FPaswd,FClientID,FWillTopic,FWillMessage:RawUtf8;
+    FUser,FPaswd,FClientID,FWillTopic,FWillMessage:RawByteString;
     FVer,FFlag:byte;
     FKeeplive:word;
   public
     function GetLogined:boolean;
     constructor Create(aTimeOut: PtrInt = 10000); reintroduce;
 
-    property User:RawUtf8 read FUser;
-    property Paswd:RawUtf8 read FPaswd;
-    property ClientID:RawUtf8 read FClientID;
-    property WillTopic:RawUtf8 read FWillTopic;
-    property WillMessage:RawUtf8 read FWillMessage;
+    property User:RawByteString read FUser;
+    property Paswd:RawByteString read FPaswd;
+    property ClientID:RawByteString read FClientID;
+    property WillTopic:RawByteString read FWillTopic;
+    property WillMessage:RawByteString read FWillMessage;
   end;
 
-function mqtt_readstr(p:Pointer;leftlen:integer;out sstr:RawUtf8):integer;
-function mqtt_readTopic(const buf:RawByteString;out topics:TRawUtf8DynArray):integer;
+function mqtt_getframelen(p:Pointer;len:integer;out lenbyte:integer):integer;
+function mqtt_readstr(p:Pointer;leftlen:integer;out sstr:RawByteString):integer;
 
-function mqtt_get_subAck(identifierid:word;returnCode:RawUtf8):RawUtf8;
+function mqtt_readTopic(const buf:RawByteString;var topics:TShortStringDynArray):integer;
+function mqtt_compareTitle(const at:RawByteString;topics:TShortStringDynArray):boolean;
+
+function mqtt_get_lenth(alen:integer):RawByteString;
+function mqtt_get_strlen(strlen:integer):RawByteString;
+
+function mqtt_get_subAck(identifierid:RawByteString;returnCode:RawByteString):RawByteString;
 
 implementation
+
+function mqtt_getframelen(p:Pointer;len:integer;out lenbyte:integer):integer;
+var
+  bitx,achar:byte;
+begin
+  Result := 0;
+  bitx := 0;
+  lenbyte := 0;
+  while True do
+  BEGIN
+    inc(Result,(pbyte(p)^ AND $7f) shl bitx);
+    if Result>CON_MQTT_MAXBYTE then
+    begin
+       Result := -1;
+       exit;
+    end;
+    inc(bitx,7);
+    if bitx>21 then
+    begin
+       Result := -2;
+       exit;
+    end;
+    inc(lenbyte);
+    if lenbyte>len then
+    begin
+      Result := -3;
+      exit;
+    end;
+    if (pbyte(p)^ AND $80) = 0 then
+      break;
+    inc(PtrUInt(p));
+  end;
+end;
 
 function mqtt_swaplen(alen:word):word;
 begin
@@ -117,11 +156,33 @@ function mqtt_add_lenth(p:Pointer;alen:integer):integer;
 begin
   Result := 0;
   repeat
-    PAnsiChar(p)^ := AnsiChar(alen and $ff);
+    PAnsiChar(p)^ := AnsiChar(alen and $7f);
     alen := alen shr 8;
     inc(PtrUInt(p),1);
     inc(Result,1);
   until (alen = 0);
+end;
+
+function mqtt_get_lenth(alen:integer):RawByteString;
+var
+  n:byte;
+begin
+  Result := '';
+  while True do
+  begin
+    n := alen and $7f;
+    alen := alen shr 7;
+    if(alen<>0) then
+      inc(n,$80);
+    Result := Result + AnsiChar(n);
+    if alen=0 then
+      break;
+  end;
+end;
+
+function mqtt_get_strlen(strlen:integer):RawByteString;
+begin
+  Result := AnsiChar((strlen shr 8) and $ff) + AnsiChar(strlen and $ff);
 end;
 
 function mqtt_get_conAck(returCode:Byte):RawUtf8;
@@ -133,17 +194,15 @@ begin
   Result[4] := AnsiChar(returCode);
 end;
 
-function mqtt_get_subAck(identifierid:word;returnCode:RawUtf8):RawUtf8;
+function mqtt_get_subAck(identifierid:RawByteString;returnCode:RawByteString):RawByteString;
 begin
-  SetLength(Result,4);
+  SetLength(Result,2);
   Result[1] := mqtt_gethdr(mtSUBACK, false, qtAT_MOST_ONCE, false);
   mqtt_add_lenth(@Result[2],length(returnCode)+2);
-  Result[3] := AnsiChar(identifierid shr 8);
-  Result[4] := AnsiChar(identifierid and $ff);
-  Result := Result + returnCode;
+  Result := Result + identifierid + returnCode;
 end;
 
-function mqtt_readstr(p:Pointer;leftlen:integer;out sstr:RawUtf8):integer;
+function mqtt_readstr(p:Pointer;leftlen:integer;out sstr:RawByteString):integer;
 var
   alen:word;
 begin
@@ -157,9 +216,20 @@ begin
   Result := alen + 2;
 end;
 
-function mqtt_readTopic(const buf:RawByteString;out topics:TRawUtf8DynArray):Integer;
+function mqtt_readTopic(const buf:RawByteString;var topics:TShortStringDynArray):Integer;
+    procedure _append(const atopic:RawByteString);
+    var
+      i:integer;
+    begin
+      for i:=0 to high(topics) do
+      if topics[i]=atopic then
+        exit;
+      i := length(topics);
+      SetLength(topics,i+1);
+      topics[i] := atopic;
+    end;
 var
-  temp:RawUtf8;
+  temp:RawByteString;
   t,n:integer;
   mQos:byte;
 begin
@@ -167,11 +237,9 @@ begin
   t := 1;
   repeat
     n := mqtt_readstr(@buf[t],length(buf)-t + 1,temp);
-    if n=0 then break;
-    SetLength(topics,Result+1);
-    topics[Result] := temp;
-    inc(Result);
-    if Result >= CON_MQTT_MAXSUB then
+    if n<2 then break;
+    _append(temp);
+    if length(topics) >= CON_MQTT_MAXSUB then
     begin
       Result := -2;
       exit;
@@ -180,7 +248,49 @@ begin
      // qos byte
     mQos := ord(buf[t]);
     inc(t);
+    inc(Result);
   until (t>length(buf));
+end;
+
+function mqtt_compareTitle(const at:RawByteString;topics:TShortStringDynArray):boolean;
+  function _compareTitle(const src,dst:RawByteString):boolean;      // is not standard
+  var
+    temp,temp2:RawByteString;
+  begin
+    Result := true;
+    if src = dst then exit;
+    if (dst[length(dst)] = '#') then
+    begin
+      temp := Copy(dst,1,length(dst)-1);
+      if src = temp then exit;
+      if length(temp)=0 then exit;  //  all
+      if temp[length(temp)] = '/' then
+      begin
+        temp := Copy(dst,1,length(dst)-1);
+        if pos(temp,src) = 1 then exit;
+      end;
+    end else
+    if (dst[length(dst)] = '+') then
+    begin
+      temp := Copy(dst,1,length(dst)-1);  //  /+
+      if length(src) > length(temp) then
+      begin
+        temp2 := src;
+        Delete(temp2,1,length(temp));
+        if pos('/',temp2)<1 then
+          exit;
+      end;
+    end;
+    Result := false;
+  end;
+var
+  i:integer;
+begin
+  Result := true;
+  for i := 0 to High(topics) do
+  if _compareTitle(at,topics[i]) then
+    exit;
+  Result := false;
 end;
 
 { TMqttSocket }
