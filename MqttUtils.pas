@@ -96,13 +96,15 @@ type
 function mqtt_getframelen(p:Pointer;len:integer;out lenbyte:integer):integer;
 function mqtt_readstr(p:Pointer;leftlen:integer;out sstr:RawByteString):integer;
 
-function mqtt_readTopic(const buf:RawByteString;var topics:TShortStringDynArray):integer;
+function mqtt_AddTopic(const buf:RawByteString;var topics:TShortStringDynArray):integer;
+function mqtt_DelTopic(const buf:RawByteString;var topics:TShortStringDynArray):integer;
 function mqtt_compareTitle(const at:RawByteString;topics:TShortStringDynArray):boolean;
 
 function mqtt_get_lenth(alen:integer):RawByteString;
 function mqtt_get_strlen(strlen:integer):RawByteString;
 
 function mqtt_get_subAck(identifierid:RawByteString;returnCode:RawByteString):RawByteString;
+function mqtt_get_unsubAck(identifierid:RawByteString;returnCode:RawByteString):RawByteString;
 
 implementation
 
@@ -202,6 +204,14 @@ begin
   Result := Result + identifierid + returnCode;
 end;
 
+function mqtt_get_unsubAck(identifierid:RawByteString;returnCode:RawByteString):RawByteString;
+begin
+  SetLength(Result,2);
+  Result[1] := mqtt_gethdr(mtUNSUBACK, false, qtAT_MOST_ONCE, false);
+  mqtt_add_lenth(@Result[2],length(returnCode)+2);
+  Result := Result + identifierid + returnCode;
+end;
+
 function mqtt_readstr(p:Pointer;leftlen:integer;out sstr:RawByteString):integer;
 var
   alen:word;
@@ -216,7 +226,7 @@ begin
   Result := alen + 2;
 end;
 
-function mqtt_readTopic(const buf:RawByteString;var topics:TShortStringDynArray):Integer;
+function mqtt_AddTopic(const buf:RawByteString;var topics:TShortStringDynArray):Integer;
     procedure _append(const atopic:RawByteString);
     var
       i:integer;
@@ -248,6 +258,37 @@ begin
      // qos byte
     mQos := ord(buf[t]);
     inc(t);
+    inc(Result);
+  until (t>length(buf));
+end;
+
+function mqtt_DelTopic(const buf:RawByteString;var topics:TShortStringDynArray):integer;
+    procedure _del(const atopic:RawByteString);
+    var
+      i,j,n:integer;
+    begin
+      for i:=0 to high(topics) do
+      if topics[i]=atopic then
+      begin
+        n := length(topics) - 1;
+        for j:=i+1 to n do
+          topics[j-1] := topics[j];
+        SetLength(topics,n);
+        exit;
+      end;
+    end;
+var
+  temp:RawByteString;
+  t,n:integer;
+  mQos:byte;
+begin
+  Result := 0;
+  t := 1;
+  repeat
+    n := mqtt_readstr(@buf[t],length(buf)-t + 1,temp);
+    if n<2 then break;
+    _del(temp);
+    inc(t,n);
     inc(Result);
   until (t>length(buf));
 end;

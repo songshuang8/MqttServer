@@ -212,7 +212,7 @@ begin
           identistrid := fSlot.readbuf[mStart] + fSlot.readbuf[mStart+1];
           inc(mStart);
           Delete(fSlot.readbuf,1,mStart);
-          ret := mqtt_readTopic(fSlot.readbuf,FSubTitle);
+          ret := mqtt_AddTopic(fSlot.readbuf,FSubTitle);
           if ret>0 then
           begin
             t := '';
@@ -221,6 +221,20 @@ begin
             WriteSelfAck2(Sender,mqtt_get_subAck(identistrid,t));
             Result := 1;
           end;
+        end;
+     mtUNSUBSCRIBE:
+        begin
+          if (ord(fSlot.readbuf[1]) and 3)<>2 then
+          begin
+            Result := -1; //error found close it
+            exit;
+          end;
+          identistrid := fSlot.readbuf[mStart] + fSlot.readbuf[mStart+1];
+          inc(mStart);
+          Delete(fSlot.readbuf,1,mStart);
+          ret := mqtt_DelTopic(fSlot.readbuf,FSubTitle);
+          if ret>0 then
+            WriteSelfAck2(Sender,#$b0#02+identistrid);
         end;
   end;
 end;
