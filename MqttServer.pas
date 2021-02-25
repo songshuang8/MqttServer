@@ -158,7 +158,9 @@ var
   MsgType:Byte;
 begin
   result := sorContinue;
+  if length(fSlot.readbuf)='' then exit;
   Sender.Log.Add.Log(sllCustom1, 'OnRead %',[BinToHex(fSlot.readbuf)], self);
+  if
   while length(fSlot.readbuf)>=2 do
   begin
     alen := mqtt_getframelen(@fSlot.readbuf[2],length(fSlot.readbuf)-1,lenwid);
