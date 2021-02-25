@@ -242,7 +242,6 @@ type
     /// this method is called when the instance is about to be deleted from a poll
     // - default implementation will reset fHandle to 0
     procedure BeforeDestroy(Sender: TAsyncConnections); virtual;
-    function OnCloseEvents(Sender: TAsyncConnections):boolean; virtual;
   public
     /// initialize this instance
     constructor Create(const aRemoteIP: RawUtf8); reintroduce; virtual;
@@ -902,11 +901,6 @@ begin
   fRemoteIP := aRemoteIP;
 end;
 
-function TAsyncConnection.OnCloseEvents(Sender: TAsyncConnections):boolean;
-begin
-  result := false;
-end;
-
 procedure TAsyncConnection.AfterCreate(Sender: TAsyncConnections);
 begin
   fLastOperation := UnixTimeUtc;
@@ -1040,7 +1034,6 @@ begin
                 fOwner.IdleEverySecond; // may take some time -> retrieve ticks again
                 idletix := mormot.core.os.GetTickCount64 + 1000;
               end;
-            fOwner.fLog.Add.Log(sllCustom1, 'Connection Count:%', [fOwner.fConnectionCount], self);
             end;
         else
           raise EAsyncConnections.CreateUtf8('%.Execute: unexpected fProcess=%',
@@ -1331,13 +1324,6 @@ begin
       allowed := UnixTimeUtc - aconn.LastOperationIdleSeconds;
       if aconn.fLastOperation < allowed then
       begin
-        try
-          if aconn.OnCloseEvents(self) then
-          begin
-             fClients.ProcessWrite(1);
-          end;
-        except
-        end;
         fLog.Add.Log(sllCustom1, 'Connection Idle % To Close it', [aconn], self);
         if not fClients.Stop(aconn) then
           fLog.Add.Log(sllDebug, 'ConnectionRemove: Stop=false for %', [aconn], self);

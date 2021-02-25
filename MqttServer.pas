@@ -27,14 +27,14 @@ type
   ERtspOverHttp = class(ESynException);
 
   TMQTTConnection = class(TAsyncConnection)
-  protected
+  private
     FWillTopic,FWillMessage:RawByteString;
-    FSubTitle:TShortStringDynArray;
+    FSubTitle:TShortStringDynArray;  
+  protected
     function DoParsePacket(Sender: TAsyncConnections;MsgType:Byte;Payload:RawByteString):integer;
 
     function OnRead(Sender: TAsyncConnections): TPollAsyncSocketOnRead; override;
     procedure BeforeDestroy(Sender: TAsyncConnections); override;
-    function OnCloseEvents(Sender: TAsyncConnections):boolean; override;
 
     procedure WriteSelfAck2(Sender: TAsyncConnections;p:RawByteString);
     procedure WritePublic(Sender: TAsyncConnections;t,c:RawByteString);
@@ -47,6 +47,7 @@ type
     fBlackBook:TRawUtf8List;
     function ConnectionCreate(aSocket: TNetSocket; const aRemoteIp: RawUtf8;
       out aConnection: TAsyncConnection): boolean; override;
+    procedure OnClientClose(connection: TObject); override;
   public
     constructor Create(const aHttpPort: RawUtf8;
       aLog: TSynLogClass; const aOnStart, aOnStop: TOnNotifyThread;
@@ -149,16 +150,6 @@ begin
   end;
 end;
 
-function TMQTTConnection.OnCloseEvents(Sender: TAsyncConnections):boolean;
-begin
-  if FWillTopic<>'' then
-  begin
-    WritePublic(Sender,FWillTopic,FWillMessage);
-    Result := true;
-  end else
-    inherited;
-end;
-
 function TMQTTConnection.OnRead(
   Sender: TAsyncConnections): TPollAsyncSocketOnRead;
 var
@@ -208,6 +199,7 @@ begin
     for i := 0 to Sender.ConnectionCount-1 do
     begin
       aconn := Sender.Connection[i] as TMQTTConnection;
+      //if aconn=self then Continue;
       if mqtt_compareTitle(t,aconn.FSubTitle) then
         Sender.Write(aconn, frame);
     end;
@@ -235,6 +227,8 @@ end;
 procedure TMQTTConnection.BeforeDestroy(Sender: TAsyncConnections);
 begin
   inherited BeforeDestroy(Sender);
+  if FWillTopic<>'' then
+    WritePublic(Sender,FWillTopic,FWillMessage);
 end;
 
 constructor TMQTTConnection.Create(const aRemoteIP: RawUtf8);
@@ -311,8 +305,12 @@ begin
     if log <> nil then
       log.Log(sllDebug, 'ConnectionCreate(%) failed', [PtrUInt(aSocket)], self);
   end;
-end;
+end;    
 
+procedure TMQTTServer.OnClientClose(connection: TObject);
+begin
+  Log.Add.Log(sllCustom1, 'Connection Count:%', [ConnectionCount], self);
+end;
 
 end.
 
