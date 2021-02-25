@@ -21,23 +21,21 @@ uses
   mormot.net.http,
   mormot.net.client,
   mormot.net.server,
-  mormot.net.async;
+  mormot.net.async_rw;
 
 type
   ERtspOverHttp = class(ESynException);
 
   TMQTTConnection = class(TAsyncConnection)
   protected
-    FLeftBuf:RawUtf8;
+    FWillTopic,FWillMessage:RawByteString;
     FSubTitle:TShortStringDynArray;
-    FErrorCount:Integer;
-    function DoParse(Sender: TAsyncConnections;mStart:Integer):integer;
-    function OnRead(
-      Sender: TAsyncConnections): TPollAsyncSocketOnRead; override;
-    procedure BeforeDestroy(Sender: TAsyncConnections); override;
-    procedure OnLastOperationIdle(Sender: TAsyncConnections);override;
+    function DoParsePacket(Sender: TAsyncConnections;MsgType:Byte;Payload:RawByteString):integer;
 
-    procedure WriteSelfAck(Sender: TAsyncConnections;p:Pointer;len:integer);
+    function OnRead(Sender: TAsyncConnections): TPollAsyncSocketOnRead; override;
+    procedure BeforeDestroy(Sender: TAsyncConnections); override;
+    function OnCloseEvents(Sender: TAsyncConnections):boolean; override;
+
     procedure WriteSelfAck2(Sender: TAsyncConnections;p:RawByteString);
     procedure WritePublic(Sender: TAsyncConnections;t,c:RawByteString);
   public
@@ -64,37 +62,138 @@ uses MqttUtils;
 
 { TPostConnection }
 
-procedure TMQTTConnection.OnLastOperationIdle(Sender: TAsyncConnections);
+function TMQTTConnection.DoParsePacket(Sender: TAsyncConnections;MsgType:Byte;Payload:RawByteString):Integer;
+var
+  identistrid:RawByteString;
+  i,ret:integer;
+  t:RawByteString;
 begin
-  inherited;
+  Result := 0;
+  case TMQTTMessageType(MsgType shr 4) of
+     mtPINGREQ:
+        begin
+          if ((MsgType and $f)<>0)
+             or (Payload<>'') then
+          begin
+            Result := -1; //error found close it
+            exit;
+          end;
+          WriteSelfAck2(Sender,#$D0#0);    //1010 0000  0
+        end;
+     mtPUBLISH:
+        begin
+          if ((MsgType  and 3)=3) or (length(Payload)<4) then
+          begin
+            Result := -1;
+            exit;
+          end;
+          ret := mqtt_readstr(@Payload[1],length(Payload),t);
+          if ret=0 then
+          begin
+            Result := -2;
+            exit;
+          end;
+          Delete(Payload,1,ret);
+          if (MsgType  and 3)>0 then
+          begin
+            if length(Payload)<3 then
+            begin
+              Result := -3;
+              exit;
+            end;
+            identistrid := Payload[1] + Payload[2];
+            Delete(Payload,1,2);
+          end;
+          if length(Payload)=0 then
+          begin
+            Result := -4;
+            exit;
+          end;
+          WritePublic(Sender,t,Payload);
+          if (MsgType  and 3)>0 then
+            WriteSelfAck2(Sender,#$40#02+identistrid);
+        end;
+     mtSUBSCRIBE:
+        begin
+          if ((MsgType and 3)<>2)
+            or (length(Payload)<5) then
+          begin
+            Result := -1; //error found close it
+            exit;
+          end;
+          identistrid := Payload[1] + Payload[2];
+          Delete(Payload,1,2);
+          ret := mqtt_AddTopic(Payload,FSubTitle);
+          if ret>0 then
+          begin
+            t := '';
+            for i := 0 to ret-1 do
+              t := t + #2;
+            WriteSelfAck2(Sender,mqtt_get_subAck(identistrid,t));
+            Result := 1;
+          end;
+        end;
+     mtUNSUBSCRIBE:
+        begin
+          if ((MsgType and 3)<>2) or (length(Payload)<5) then
+          begin
+            Result := -1; //error found close it
+            exit;
+          end;
+          identistrid := Payload[1] + Payload[2];
+          Delete(Payload,1,2);
+          ret := mqtt_DelTopic(Payload,FSubTitle);
+          if ret>0 then
+            WriteSelfAck2(Sender,#$b0#02+identistrid);
+        end;
+  end;
+end;
 
+function TMQTTConnection.OnCloseEvents(Sender: TAsyncConnections):boolean;
+begin
+  if FWillTopic<>'' then
+  begin
+    WritePublic(Sender,FWillTopic,FWillMessage);
+    Result := true;
+  end else
+    inherited;
 end;
 
 function TMQTTConnection.OnRead(
   Sender: TAsyncConnections): TPollAsyncSocketOnRead;
 var
   alen,lenwid:integer;
+  Payload:RawByteString;
+  MsgType:Byte;
 begin
   result := sorContinue;
-  if Length(fSlot.readbuf)<2 then
-    exit;
   Sender.Log.Add.Log(sllCustom1, 'OnRead %',[BinToHex(fSlot.readbuf)], self);
-  alen := mqtt_getframelen(@fSlot.readbuf[2],length(fSlot.readbuf)-1,lenwid);
-  if (alen = -3) or (alen>length(fSlot.readbuf)) then
+  while length(fSlot.readbuf)>=2 do
   begin
-     exit
-  end else
-  if alen < 0 then
-  begin
-   fSlot.readbuf := '';
-   inc(FErrorCount);
-   exit;
+    alen := mqtt_getframelen(@fSlot.readbuf[2],length(fSlot.readbuf)-1,lenwid);
+    if (alen = -3) or ((alen+lenwid+1)>length(fSlot.readbuf)) then  //part data, wait for recv
+    begin
+       exit;
+    end else
+    if alen < 0 then
+    begin
+       fSlot.readbuf := '';
+       result := sorClose;     //error
+       exit;
+    end;
+    MsgType := ord(fSlot.readbuf[1]);
+    if alen>0 then
+      Payload := Copy(fSlot.readbuf,lenwid+2,alen)
+    else
+      Payload := '';
+    Delete(fSlot.readbuf,1,alen + lenwid + 1);
+    if DoParsePacket(Sender,MsgType,Payload)<0 then
+    begin
+       fSlot.readbuf := '';
+       result := sorClose;     //error
+       exit;
+    end;
   end;
-  if DoParse(Sender,lenwid+2)>=0 then
-    FErrorCount := 0
-  else
-    inc(FErrorCount);
-  fSlot.readbuf := '';
 end;
 
 procedure TMQTTConnection.WritePublic(Sender: TAsyncConnections; t,c: RawByteString);
@@ -114,22 +213,6 @@ begin
     end;
   finally
     Sender.Unlock;
-  end;
-end;
-
-procedure TMQTTConnection.WriteSelfAck(Sender: TAsyncConnections;p:Pointer; len: integer);
-var
-  aconn: TAsyncConnection;
-begin
-  aconn := Sender.ConnectionFindLocked(self.Handle);
-  if aconn <> nil then
-  try
-    Sender.Write(aconn, p,len);
-  finally
-    Sender.Unlock;
-  end else
-  begin
-    Sender.Log.Add.Log(sllDebug, 'OnRead % ',[Handle], self);
   end;
 end;
 
@@ -157,86 +240,6 @@ end;
 constructor TMQTTConnection.Create(const aRemoteIP: RawUtf8);
 begin
   inherited;
-  FErrorCount := 0;
-end;
-
-function TMQTTConnection.DoParse(Sender: TAsyncConnections;mStart:Integer):Integer;
-var
-  identistrid:RawByteString;
-  i,ret,tag:integer;
-  t:RawByteString;
-begin
-  Result := 0;
-  case TMQTTMessageType(ord(fSlot.readbuf[1]) shr 4) of
-     mtPINGREQ:
-        begin
-          if (length(fSlot.readbuf)<>2)
-              or  ((ord(fSlot.readbuf[1]) and $f)<>0)
-              or  (ord(fSlot.readbuf[2])<>0) then
-          begin
-            Result := -1; //error found close it
-            exit;
-          end;
-          WriteSelfAck2(Sender,#$D0#0);    //1010 0000  0
-        end;
-     mtPUBLISH:
-        begin
-          tag := ord(fSlot.readbuf[1]) and $f;
-          if (tag  and 3)=3 then
-          begin
-            Result := -1;
-            exit;
-          end;
-          Delete(fSlot.readbuf,1,mStart-1);
-          ret := mqtt_readstr(@fSlot.readbuf[1],length(fSlot.readbuf),t);
-          if ret=0 then exit;
-          Delete(fSlot.readbuf,1,ret);
-          if (tag  and 3)>0 then
-          begin
-            identistrid := fSlot.readbuf[1] + fSlot.readbuf[2];
-            Delete(fSlot.readbuf,1,2);
-          end;
-          if length(fSlot.readbuf)=0 then
-            exit;
-          WritePublic(Sender,t,fSlot.readbuf);
-          if (tag  and 3)>0 then
-            WriteSelfAck2(Sender,#$40#02+identistrid);
-        end;
-     mtSUBSCRIBE:
-        begin
-          if (ord(fSlot.readbuf[1]) and 3)<>2 then
-          begin
-            Result := -1; //error found close it
-            exit;
-          end;
-          identistrid := fSlot.readbuf[mStart] + fSlot.readbuf[mStart+1];
-          inc(mStart);
-          Delete(fSlot.readbuf,1,mStart);
-          ret := mqtt_AddTopic(fSlot.readbuf,FSubTitle);
-          if ret>0 then
-          begin
-            t := '';
-            for i := 0 to ret-1 do
-              t := t + #2;
-            WriteSelfAck2(Sender,mqtt_get_subAck(identistrid,t));
-            Result := 1;
-          end;
-        end;
-     mtUNSUBSCRIBE:
-        begin
-          if (ord(fSlot.readbuf[1]) and 3)<>2 then
-          begin
-            Result := -1; //error found close it
-            exit;
-          end;
-          identistrid := fSlot.readbuf[mStart] + fSlot.readbuf[mStart+1];
-          inc(mStart);
-          Delete(fSlot.readbuf,1,mStart);
-          ret := mqtt_DelTopic(fSlot.readbuf,FSubTitle);
-          if ret>0 then
-            WriteSelfAck2(Sender,#$b0#02+identistrid);
-        end;
-  end;
 end;
 
 { TRtspOverHttpServer }
@@ -247,8 +250,7 @@ constructor TMQTTServer.Create(
 begin
   fLog := aLog;
   fBlackBook := TRawUtf8List.Create([fObjectsOwned, fCaseSensitive]);
-  inherited Create(
-    aHttpPort, aOnStart, aOnStop, TMQTTConnection, 'rtsp/http', aLog, aOptions);
+  inherited Create(aHttpPort, aOnStart, aOnStop, TMQTTConnection, 'MQTTSvr', aLog, aOptions,10);
 end;
 
 destructor TMQTTServer.Destroy;
@@ -264,7 +266,7 @@ function TMQTTServer.ConnectionCreate(aSocket: TNetSocket;
 var
   log: ISynLog;
   sock: TMqttSocket;
-  postconn: TMQTTConnection;
+  mqttconn: TMQTTConnection;
 begin
   aConnection := nil;
   result := false;
@@ -281,28 +283,30 @@ begin
           log.Log(sllTrace, 'ConnectionCreate received =%,%',
             [sock.User, sock.Paswd], self);
          sock.Sock := TNetSocket(-1); // disable Close on sock.Free -> handled in pool
-      end else
-      begin
-        if log <> nil then
-          log.Log(sllDebug, 'ConnectionCreate: ignored invalid %', [sock], self);
-        exit;
-      end;
+         //
+         mqttconn := TMQTTConnection.Create(aRemoteIp);
+         mqttconn.LastOperationIdleSeconds := sock.KeepliveTimeOut;
+         mqttconn.FWillTopic := sock.WillTopic;
+         mqttconn.FWillMessage := sock.WillMessage;
+          if not inherited ConnectionAdd(aSocket, mqttconn) then
+            raise ERtspOverHttp.CreateUtf8('inherited %.ConnectionAdd(%) failed',
+              [self, aSocket]);
+          aConnection := mqttconn;
+
+          result := true;
+          if log <> nil then
+            log.Log(sllTrace,
+              'ConnectionCreate added post=%/% for %',
+              [PtrUInt(aSocket), aConnection.Handle], self);
+            end else
+            begin
+              if log <> nil then
+                log.Log(sllDebug, 'ConnectionCreate: ignored invalid %', [sock], self);
+              exit;
+            end;
     finally
       sock.Free;
     end;
-
-    postconn := TMQTTConnection.Create(aRemoteIp);
-    postconn.FLeftBuf := '';
-    if not inherited ConnectionAdd(aSocket, postconn) then
-      raise ERtspOverHttp.CreateUtf8('inherited %.ConnectionAdd(%) failed',
-        [self, aSocket]);
-    aConnection := postconn;
-
-    result := true;
-    if log <> nil then
-      log.Log(sllTrace,
-        'ConnectionCreate added post=%/% for %',
-        [PtrUInt(aSocket), aConnection.Handle], self);
   except
     if log <> nil then
       log.Log(sllDebug, 'ConnectionCreate(%) failed', [PtrUInt(aSocket)], self);

@@ -81,7 +81,7 @@ type
   protected
     FUser,FPaswd,FClientID,FWillTopic,FWillMessage:RawByteString;
     FVer,FFlag:byte;
-    FKeeplive:word;
+    FKeepliveTimeOut:word;
   public
     function GetLogined:boolean;
     constructor Create(aTimeOut: PtrInt = 10000); reintroduce;
@@ -91,6 +91,7 @@ type
     property ClientID:RawByteString read FClientID;
     property WillTopic:RawByteString read FWillTopic;
     property WillMessage:RawByteString read FWillMessage;
+    property KeepliveTimeOut:word read FKeepliveTimeOut;
   end;
 
 function mqtt_getframelen(p:Pointer;len:integer;out lenbyte:integer):integer;
@@ -318,7 +319,7 @@ function mqtt_compareTitle(const at:RawByteString;topics:TShortStringDynArray):b
       begin
         temp2 := src;
         Delete(temp2,1,length(temp));
-        if pos('/',temp2)<1 then
+        if Pos('/',temp2)<1 then
           exit;
       end;
     end;
@@ -413,14 +414,14 @@ begin
       if alen<12 then  exit;
       if (buf[8]<>MQTT_VERSION3) then exit;
       if not CompareMemSmall(@buf[2],PAnsiChar(MQTT_PROTOCOLV3),MQTT_VERSIONLEN3) then exit;
-      FKeeplive := (buf[10] shl 8) or buf[11];
+      FKeepliveTimeOut := (buf[10] shl 8) or buf[11];
       p := 9;
     end else
     if (buf[1]=MQTT_VERSIONLEN311) then
     begin
       if (buf[6]<>MQTT_VERSION4) then exit;
       if not CompareMemSmall(@buf[2],PAnsiChar(MQTT_PROTOCOLV311),length(MQTT_PROTOCOLV311)) then exit;
-      FKeeplive := (buf[8] shl 8) or buf[9];
+      FKeepliveTimeOut := (buf[8] shl 8) or buf[9];
       p := 7;
     end else
       exit;
