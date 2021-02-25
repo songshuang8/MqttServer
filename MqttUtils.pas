@@ -160,7 +160,7 @@ begin
   Result := 0;
   repeat
     PAnsiChar(p)^ := AnsiChar(alen and $7f);
-    alen := alen shr 8;
+    alen := alen shr 7;
     inc(PtrUInt(p),1);
     inc(Result,1);
   until (alen = 0);
