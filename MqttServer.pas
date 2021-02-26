@@ -105,7 +105,7 @@ begin
               if length(Payload)<9 then  exit;
               if (Payload[6]<>MQTT_VERSION4) then exit;
               if not CompareMemSmall(@Payload[2],PAnsiChar(MQTT_PROTOCOLV311),length(MQTT_PROTOCOLV311)) then exit;
-              LastOperationIdleSeconds := (ord(Payload[8]) shl 8) or ord(Payload[9]);
+              LastOperationIdleSeconds := (ord(Payload[8]) shl 8) or ord(Payload[9]) ;
               FFlag := ord(Payload[7]);
               Delete(Payload,1,9);
           end else
@@ -113,6 +113,7 @@ begin
               Result := -1;
               exit;
           end;
+          LastOperationIdleSeconds := LastOperationIdleSeconds  + 3;
           ret:=mqtt_readstr(@Payload[1],length(Payload),FClientID);
           if ret = 0 then
           begin
@@ -162,6 +163,7 @@ begin
             Delete(Payload,1,ret);
           end;
           WriteSelfAck2(Sender,mqtt_get_conack(0));
+          FLogined := true;
         end;
      mtPINGREQ:
         begin
@@ -274,6 +276,7 @@ begin
     Delete(fSlot.readbuf,1,alen + lenwid + 1);
     if DoParsePacket(Sender,MsgType,Payload)<0 then
     begin
+       Sender.Log.Add.Log(sllCustom1, 'cant parse %',[BinToHex(fSlot.readbuf)], self);
        fSlot.readbuf := '';
        result := sorClose;     //error
        exit;
@@ -321,8 +324,8 @@ end;
 procedure TMQTTConnection.BeforeDestroy(Sender: TAsyncConnections);
 begin
   inherited BeforeDestroy(Sender);
-  if FWillTopic<>'' then
-    WritePublic(Sender,FWillTopic,FWillMessage);
+//  if FWillTopic<>'' then
+//    WritePublic(Sender,FWillTopic,FWillMessage);
 end;
 
 constructor TMQTTConnection.Create(const aRemoteIP: RawUtf8);
@@ -356,6 +359,7 @@ var
   mqttconn: TMQTTConnection;
 begin
          mqttconn := TMQTTConnection.Create(aRemoteIp);
+         mqttconn.LastOperationIdleSeconds := 3;
           if not inherited ConnectionAdd(aSocket, mqttconn) then
             raise ERtspOverHttp.CreateUtf8('inherited %.ConnectionAdd(%) failed',
               [self, aSocket]);

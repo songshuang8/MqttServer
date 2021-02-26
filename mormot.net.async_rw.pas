@@ -1327,7 +1327,11 @@ begin
         fLog.Add.Log(sllCustom1, 'Connection Idle % To Close it', [aconn], self);
         if not fClients.Stop(aconn) then
           fLog.Add.Log(sllDebug, 'ConnectionRemove: Stop=false for %', [aconn], self);
-        ConnectionDelete(aconn, i);
+
+        if not fClients.Stop(aconn) then
+          fLog.Add.Log(sllDebug,'ConnectionRemove: Stop=false for %',[aconn],self);
+        if Terminated then  break;
+        ConnectionDelete(aconn,i);
       end else
         inc(i);
     end;
@@ -1384,7 +1388,9 @@ begin
   try
     while not Terminated do
     begin
+      fLog.Add.Log(sllCustom1, ' waiting for accept', [], self);
       res := fServer.Sock.Accept(client, sin);
+      fLog.Add.Log(sllCustom1, ' got accept %', [ToText(res)^], self);
       if res <> nrOk then
         if Terminated then
           break
@@ -1402,6 +1408,7 @@ begin
         break;
       end;
       ip := sin.IP;
+      fLog.Add.Log(sllCustom1, ' Accept ip=%', [ip], self);
       if ConnectionCreate(client, ip, connection) then
         if fClients.Start(connection) then
           fLog.Add.Log(sllTrace, 'Execute: Accept()=%', [connection], self)
