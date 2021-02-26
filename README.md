@@ -1,39 +1,39 @@
 # MqttServer
  Based on mormots network,logs,sqlite,rest 
  
+This set of units is still a work-in-progress
+ 
  how to use 
  in consel:
  
- const
-  CONCURRENT = 500;
+{$APPTYPE CONSOLE}
+
+{$I mormot.defines.inc}
+
+uses
+  {$I mormot.uses.inc}
+  SysUtils,
+  MqttServer in 'src\MqttServer\MqttServer.pas',
+  MqttUtils in 'src\MqttServer\MqttUtils.pas',
+  mormot.net.async_rw in 'src\MqttServer\mormot.net.async_rw.pas',
+  MqttApp in 'src\MqttServer\MqttApp.pas';
+
+{$R *.res}
+
 var
-  server: TMQTTServer;
-  clients, steps: integer;
+  server: TMQTTApp;
 begin
-  if (paramcount = 0) or not TryStrToInt(paramstr(1), clients) then
-    clients := CONCURRENT
-  else if (paramcount = 1) or not TryStrToInt(paramstr(2), steps) then
-    steps := 10;
-  TSynLog.Family.HighResolutionTimeStamp := true;
-  TSynLog.Family.PerThreadLog := ptIdentifiedInOnFile;
-  if steps<200 then
-    TSynLog.Family.Level := LOG_VERBOSE
-  else
-    TSynLog.Family.Level := LOG_STACKTRACE + [sllCustom1];
-  TSynLog.Family.EchoToConsole := LOG_STACKTRACE + [sllCustom1];
-  server := TMQTTServer.Create('4009', TSynLog, nil, nil);
+  server := TMQTTApp.Create;
   try
-    server.Clients.Options := [paoWritePollOnly];
-    //server.Options := [acoVerboseLog];
-    writeln(server.ClassName, ' running');
-    writeln('  performing tests with ', clients, ' concurrent streams using ',
-      server.Clients.PollRead.PollClass.ClassName, #10);
-//    timer.Start;
-//    server.RegressionTests(nil, clients, steps);
-//    writeln(#10'  tests finished in ', timer.Stop);
-    writeln('Press [Enter] to close server.');
-    Readln;
+    if server.Init then
+    begin
+      write('Server is now running on'#13#10#13#10+
+        'Press [Enter] to quit');
+      readln;
+    end;
   finally
-    server.Free;
+    Writeln('Start stoppeding...');
+    FreeAndNil(server);
+    Writeln('irrc stoppeded.');
   end;
-end;
+end.

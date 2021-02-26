@@ -246,7 +246,7 @@ constructor TMQTTServer.Create(
 begin
   fLog := aLog;
   fBlackBook := TRawUtf8List.Create([fObjectsOwned, fCaseSensitive]);
-  inherited Create(aHttpPort, aOnStart, aOnStop, TMQTTConnection, 'MQTTSvr', aLog, aOptions,16);
+  inherited Create(aHttpPort, aOnStart, aOnStop, TMQTTConnection, 'MQTTSvr', aLog, aOptions,1);
 end;
 
 destructor TMQTTServer.Destroy;
@@ -290,10 +290,10 @@ begin
           aConnection := mqttconn;
 
           result := true;
-          log.Log(sllTrace,
+          if log <> nil then
+            log.Log(sllTrace,
               'ConnectionCreate added post=%/% for %',
               [PtrUInt(aSocket), aConnection.Handle], self);
-          log.Log(sllCustom1, 'Connection Count:%', [ConnectionCount], self);
       end else
       begin
         if log <> nil then

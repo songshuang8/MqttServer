@@ -37,8 +37,8 @@ begin
   begin
     HighResolutionTimeStamp := true;
     PerThreadLog := ptIdentifiedInOnFile;
-//    Level := [sllTrace];
-    Level := LOG_STACKTRACE + [sllCustom1];
+    Level := [sllTrace];
+//    Level := LOG_STACKTRACE + [sllCustom1];
     EchoToConsole := LOG_STACKTRACE + [sllCustom1];
     DestinationPath := 'log'+PathDelim;
     if not FileExists(DestinationPath) then  CreateDir(DestinationPath);
@@ -48,7 +48,7 @@ begin
     //EchoCustom := OnLogEvent;
     EchoToConsole := LOG_VERBOSE; // log all events to the console
   end;
-  mqttserver := TMQTTServer.Create('4009', TSynLog, nil, nil);
+  mqttserver := TMQTTServer.Create('4010', TSynLog, nil, nil);
   mqttserver.Clients.Options := [paoWritePollOnly];
   //server.Options := [acoVerboseLog];
   writeln(mqttserver.ClassName, ' running');

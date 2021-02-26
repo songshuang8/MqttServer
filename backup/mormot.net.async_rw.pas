@@ -18,7 +18,7 @@ unit mormot.net.async_rw;
 
 interface
 
-{$I mormot.defines.inc}
+{$I ..\mormot.defines.inc}
 
 uses
   sysutils,
@@ -908,7 +908,7 @@ end;
 
 procedure TAsyncConnection.AfterWrite(Sender: TAsyncConnections);
 begin
-  fLastOperation := UnixTimeUtc;
+  // do nothing
 end;
 
 procedure TAsyncConnection.BeforeDestroy(Sender: TAsyncConnections);
