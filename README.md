@@ -1,11 +1,11 @@
 # MqttServer
- Based on mormots network,logs,sqlite,rest 
- 
+ Based on mormots network,logs,sqlite,rest
+
 This set of units is still a work-in-progress
- 
- how to use 
+
+ how to use
  in consel:
- 
+
 {$APPTYPE CONSOLE}
 
 {$I mormot.defines.inc}
