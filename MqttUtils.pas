@@ -14,7 +14,9 @@ uses
   mormot.core.text,
   mormot.core.unicode,
   mormot.core.log,
-  mormot.net.sock;
+  mormot.net.sock,
+  mormot.net.server,
+  mormot.net.async_rw;
 
 type
   TMQTTMessageType =
@@ -41,14 +43,14 @@ const
   CON_MQTT_MAXBYTE = 2048;
   CON_MQTT_MAXSUB = 5;
   MQTT_PROTOCOLV3   = 'MQIsdp';
-//  MQTT_VERSION3    = 3;
-  MQTT_VERSION3    = #3;
+  MQTT_VERSION3    = 3;
+  MQTT_VERSION3_CHAR    = #3;
   MQTT_VERSIONLEN3    = 6;
   MQTT_VERSIONLEN3_CHAR    = #6;
   MQTT_PROTOCOLV311   = 'MQTT';
-//  MQTT_VERSION4    = 4;
+  MQTT_VERSION4    = 4;
   MQTT_VERSIONLEN311_CHAR    = #4;
-  MQTT_VERSION4    = #4;
+  MQTT_VERSION4_CHAR    = #4;
   MQTT_VERSIONLEN311    = 4;
   MsgNames : array [TMQTTMessageType] of string =
   (
@@ -83,22 +85,12 @@ const
   );
 
 type
-  TMqttSocket = class(TCrtSocket)
+  TMqttSocket = class(TMqttServerSocket)
   protected
-    fLog: TSynLogClass;
-    FUser,FPaswd,FClientID,FWillTopic,FWillMessage:RawByteString;
-    FVer,FFlag:byte;
-    FKeepliveTimeOut:word;
   public
-    function GetLogined:boolean;
-    constructor Create(aTimeOut: PtrInt;alog:TSynLogClass); reintroduce;
+    constructor Create(aServer: TAsyncServer;aTimeOut: PtrInt); reintroduce;
 
-    property User:RawByteString read FUser;
-    property Paswd:RawByteString read FPaswd;
-    property ClientID:RawByteString read FClientID;
-    property WillTopic:RawByteString read FWillTopic;
-    property WillMessage:RawByteString read FWillMessage;
-    property KeepliveTimeOut:word read FKeepliveTimeOut;
+    function Login(headerMaxTix:Int64):TMqttLoginResult; override;
   end;
 
 function mqtt_getframelen(p:Pointer;len:integer;out lenbyte:integer):integer;
@@ -119,7 +111,7 @@ implementation
 
 function mqtt_getframelen(p:Pointer;len:integer;out lenbyte:integer):integer;
 var
-  bitx,achar:byte;
+  bitx:byte;
 begin
   Result := 0;
   bitx := 0;
@@ -344,21 +336,19 @@ begin
 end;
 
 { TMqttSocket }
+//const
+//  teststr = '00064D514973647003C60009000C64633466323235383063666600197075622F686561746374726C2F646334663232353830636666000A7B22636D64223A38387D000474657374000474657374';
 
-constructor TMqttSocket.Create(aTimeOut: PtrInt;alog:TSynLogClass);
+constructor TMqttSocket.Create(aServer: TAsyncServer; aTimeOut: PtrInt);
 begin
-  inherited Create(aTimeOut);
-  fLog := alog;
+  inherited create(aServer,timeOut);
   FUser := '';
   FClientID := '';
   FPaswd := '';
   FWillTopic := '';
 end;
 
-//const
-//  teststr = '00064D514973647003C60009000C64633466323235383063666600197075622F686561746374726C2F646334663232353830636666000A7B22636D64223A38387D000474657374000474657374';
-
-function TMqttSocket.GetLogined: boolean;
+function TMqttSocket.Login(headerMaxTix: Int64): TMqttLoginResult;
 var
   achar:byte;
     function _getframelen:integer;
@@ -388,20 +378,28 @@ var
   buf:array of byte;
 //  temp:RawUtf8;
 begin
-  result := false;
+  result := mmqttError;
   try
     CreateSockIn;
+    // abort now with no exception if socket is obviously broken
+    if fServer <> nil then
+    begin
+      if (fServer = nil) or fServer.Terminated then
+        exit;
+    end;
     //
     SockRecv(@achar,1);
     if TMQTTMessageType((achar and $f0) shr 4) <> mtCONNECT then
     begin
-      fLog.Add.Log(sllCustom1, 'Login title=%',[inttostr(achar)], self);
+      if Assigned(OnLog) then
+        OnLog(sllCustom1, 'Login title=%',[inttostr(achar)], self);
       exit;
     end;
     alen := _getframelen;
     if alen<10 then
     begin
-      fLog.Add.Log(sllCustom1, 'Login len=%',[alen], self);
+      if Assigned(OnLog) then
+        OnLog(sllCustom1, 'Login len=%',[alen], self);
       exit;
     end;
     //
@@ -430,88 +428,95 @@ begin
     SockRecv(@buf[0],alen);
     if buf[0] <> 0 then
     begin
-      fLog.Add.Log(sllCustom1, 'Login %',[BinToHex(@buf[0],alen)], self);
+      if Assigned(OnLog) then
+      OnLog(sllCustom1, 'Login %',[BinToHex(@buf[0],alen)], self);
       exit;
     end;
-//    temp := teststr;
-//    alen := length(temp) div 2;
-//    SetLength(buf,alen);
-//    for p := 1 to High(buf) do
-//    begin
-//      buf[p-1] := StrToInt('$'+temp[1]+ temp[2]);
-//      delete(temp,1,2);
-//    end;
+    //
+    if (buf[1]=MQTT_VERSIONLEN3) then
+    begin
+      if alen<12 then  exit;
+      if (buf[8]<>MQTT_VERSION3) then exit;
+      if not CompareMemSmall(@buf[2],PAnsiChar(MQTT_PROTOCOLV3),MQTT_VERSIONLEN3) then exit;
+      FKeepliveTimeOut := (buf[10] shl 8) or buf[11];
+      p := 9;
+    end else
+    if (buf[1]=MQTT_VERSIONLEN311) then
+    begin
+      if (buf[6]<>MQTT_VERSION4) then exit;
+      if not CompareMemSmall(@buf[2],PAnsiChar(MQTT_PROTOCOLV311),length(MQTT_PROTOCOLV311)) then exit;
+      FKeepliveTimeOut := (buf[8] shl 8) or buf[9];
+      p := 7;
+    end else
+    begin
+      if Assigned(OnLog) then
+        OnLog(sllCustom1, 'Login other ver%',[BinToHex(@buf[0],alen)], self);
+      exit;
+    end;
+    FFlag := buf[p];
+    inc(p,3);
+    n:=mqtt_readstr(@buf[p],alen-p,FClientID);
+    if n = 0 then
+    begin
+      if Assigned(OnLog) then
+        OnLog(sllCustom1, 'Login read err 1 %',[BinToHex(@buf[0],alen)], self);
+      exit;
+    end;
+    p := p + n;
 
-//    if (buf[1]=MQTT_VERSIONLEN3) then
-//    begin
-//      if alen<12 then  exit;
-//      if (buf[8]<>MQTT_VERSION3) then exit;
-//      if not CompareMemSmall(@buf[2],PAnsiChar(MQTT_PROTOCOLV3),MQTT_VERSIONLEN3) then exit;
-//      FKeepliveTimeOut := (buf[10] shl 8) or buf[11];
-//      p := 9;
-//    end else
-//    if (buf[1]=MQTT_VERSIONLEN311) then
-//    begin
-//      if (buf[6]<>MQTT_VERSION4) then exit;
-//      if not CompareMemSmall(@buf[2],PAnsiChar(MQTT_PROTOCOLV311),length(MQTT_PROTOCOLV311)) then exit;
-//      FKeepliveTimeOut := (buf[8] shl 8) or buf[9];
-//      p := 7;
-//    end else
-//    begin
-//      fLog.Add.Log(sllCustom1, 'Login other ver%',[BinToHex(@buf[0],alen)], self);
-//      exit;
-//    end;
-//    FFlag := buf[p];
-//    inc(p,3);
-//    n:=mqtt_readstr(@buf[p],alen-p,FClientID);
-//    if n = 0 then
-//    begin
-//      fLog.Add.Log(sllCustom1, 'Login read err 1 %',[BinToHex(@buf[0],alen)], self);
-//      exit;
-//    end;
-//    p := p + n;
+    if (FFlag and $4)<>0 then
+    begin
+      n := mqtt_readstr(@(buf[p]),alen-p,FWillTopic);
+      if n = 0 then
+      begin
+        if Assigned(OnLog) then
+          OnLog(sllCustom1, 'Login read err 2 %',[BinToHex(@buf[0],alen)], self);
+        exit;
+      end;
+      p := p + n;
+
+      n := mqtt_readstr(@(buf[p]),alen-p,FWillMessage);
+      if n = 0 then
+      begin
+        if Assigned(OnLog) then
+          OnLog(sllCustom1, 'Login read err 3 %',[BinToHex(@buf[0],alen)], self);
+        exit;
+      end;
+      p := p + n;
+    end;
+    if (FFlag and $80)<>0 then
+    begin
+      n := mqtt_readstr(@(buf[p]),alen-p,FUser);
+      if n = 0 then
+      begin
+        if Assigned(OnLog) then
+          OnLog(sllCustom1, 'Login read err 4 %',[BinToHex(@buf[0],alen)], self);
+        exit;
+      end;
+      p := p + n;
+    end;
+
+    if (FFlag and $40)<>0 then
+    begin
+      n := mqtt_readstr(@(buf[p]),alen-p,FPaswd);
+      if n = 0 then
+      begin
+        if Assigned(OnLog) then
+          OnLog(sllCustom1, 'Login read err 5 %',[BinToHex(@buf[0],alen)], self);
+        exit;
+      end;
+      p := p + n;
+    end;
+    //
+    if (headerMaxTix > 0) and
+       (GetTickCount64 > headerMaxTix) then
+    begin
+      result := mmqttTimeout;
+      exit; // allow 10 sec for header -> DOS/TCPSYN Flood
+    end;
 //
-//    if (FFlag and $4)<>0 then
-//    begin
-//      n := mqtt_readstr(@(buf[p]),alen-p,FWillTopic);
-//      if n = 0 then
-//      begin
-//        fLog.Add.Log(sllCustom1, 'Login read err 2 %',[BinToHex(@buf[0],alen)], self);
-//        exit;
-//      end;
-//      p := p + n;
-//
-//      n := mqtt_readstr(@(buf[p]),alen-p,FWillMessage);
-//      if n = 0 then
-//      begin
-//        fLog.Add.Log(sllCustom1, 'Login read err 3 %',[BinToHex(@buf[0],alen)], self);
-//        exit;
-//      end;
-//      p := p + n;
-//    end;
-//    if (FFlag and $80)<>0 then
-//    begin
-//      n := mqtt_readstr(@(buf[p]),alen-p,FUser);
-//      if n = 0 then
-//      begin
-//        fLog.Add.Log(sllCustom1, 'Login read err 4 %',[BinToHex(@buf[0],alen)], self);
-//        exit;
-//      end;
-//      p := p + n;
-//    end;
-//
-//    if (FFlag and $40)<>0 then
-//    begin
-//      n := mqtt_readstr(@(buf[p]),alen-p,FPaswd);
-//      if n = 0 then
-//      begin
-//        fLog.Add.Log(sllCustom1, 'Login read err 5 %',[BinToHex(@buf[0],alen)], self);
-//        exit;
-//      end;
-//      p := p + n;
-//    end;
-//    Write(mqtt_get_conack(0));
-//    result := true;
+    Write(mqtt_get_conack(0));
+    result := mmqttok;
   except
   end;
 end;

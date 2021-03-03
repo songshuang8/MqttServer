@@ -1,4 +1,4 @@
-unit MqttServer;
+unit MqttService;
 
 interface
 
@@ -29,7 +29,6 @@ type
   TMQTTConnection = class(TAsyncConnection)
   private
     FClientId:RawByteString;
-    FLogined:Boolean;
     FWillTopic,FWillMessage:RawByteString;
     FSubTitle:TShortStringDynArray;  
   protected
@@ -47,9 +46,11 @@ type
   TMQTTServer = class(TAsyncServer)
   protected
     fBlackBook:TRawUtf8List;
-    function ConnectionCreate(aSocket: TNetSocket; const aRemoteIp: RawUtf8;
-      out aConnection: TAsyncConnection): boolean; override;
+    function ConnectionCreate(aSocket: TMqttServerSocket;out aConnection: TAsyncConnection): boolean; override;
     procedure OnClientClose(connection: TObject); override;
+    function getCreateSocket:TMqttServerSocket; override;
+
+    procedure OnClientsLogs(Level: TSynLogInfo; const Fmt: RawUtf8; const Args: array of const; Instance: TObject = nil);
   public
     constructor Create(const aHttpPort: RawUtf8;
       aLog: TSynLogClass; const aOnStart, aOnStop: TOnNotifyThread;
@@ -71,21 +72,13 @@ var
   i,ret:integer;
   t:RawByteString;
   msg:TMQTTMessageType;
-  FFlag:byte;
 begin
   Result := 0;
   msg := TMQTTMessageType(MsgType shr 4);
-  if not FLogined then
-     if msg<>mtCONNECT then
-     begin
-       Result := -1;
-       exit;
-     end;
-
   case msg of
      mtCONNECT:
         begin
-          if Payload[1]<>#0 then
+         { if Payload[1]<>#0 then
           begin
             Result := -1;
             exit;
@@ -94,7 +87,7 @@ begin
           if Payload[1]=MQTT_VERSIONLEN3_CHAR then
           begin
               if length(Payload)<11 then  exit;
-              if (Payload[8]<>MQTT_VERSION3) then exit;
+              if (Payload[8]<>MQTT_VERSION3_CHAR) then exit;
               if not CompareMemSmall(@Payload[2],PAnsiChar(MQTT_PROTOCOLV3),MQTT_VERSIONLEN3) then exit;
               LastOperationIdleSeconds := (ord(Payload[10]) shl 8) or ord(Payload[11]);
               FFlag := ord(Payload[9]);
@@ -103,7 +96,7 @@ begin
           if (Payload[1]=MQTT_VERSIONLEN311_CHAR) then
           begin
               if length(Payload)<9 then  exit;
-              if (Payload[6]<>MQTT_VERSION4) then exit;
+              if (Payload[6]<>MQTT_VERSION4_CHAR) then exit;
               if not CompareMemSmall(@Payload[2],PAnsiChar(MQTT_PROTOCOLV311),length(MQTT_PROTOCOLV311)) then exit;
               LastOperationIdleSeconds := (ord(Payload[8]) shl 8) or ord(Payload[9]) ;
               FFlag := ord(Payload[7]);
@@ -163,7 +156,7 @@ begin
             Delete(Payload,1,ret);
           end;
           WriteSelfAck2(Sender,mqtt_get_conack(0));
-          FLogined := true;
+          FLogined := true;  }
         end;
      mtPINGREQ:
         begin
@@ -331,7 +324,7 @@ end;
 constructor TMQTTConnection.Create(const aRemoteIP: RawUtf8);
 begin
   inherited;
-  FLogined := false;
+
 end;
 
 { TRtspOverHttpServer }
@@ -342,7 +335,8 @@ constructor TMQTTServer.Create(
 begin
   fLog := aLog;
   fBlackBook := TRawUtf8List.Create([fObjectsOwned, fCaseSensitive]);
-  inherited Create(aHttpPort, aOnStart, aOnStop, TMQTTConnection, 'MQTTSvr', aLog, aOptions,32);
+  inherited Create(aHttpPort, aOnStart, aOnStop, TMQTTConnection, 'MQTTSvr', aLog, aOptions,16,4);
+  Sock.OnLog := OnClientsLogs;
 end;
 
 destructor TMQTTServer.Destroy;
@@ -353,30 +347,41 @@ begin
   inherited Destroy;
 end;
 
-function TMQTTServer.ConnectionCreate(aSocket: TNetSocket;
-  const aRemoteIp: RawUtf8; out aConnection: TAsyncConnection): boolean;
+function TMQTTServer.getCreateSocket: TMqttServerSocket;
+begin
+  Result := TMqttSocket.Create(self,3000);
+end;
+
+function TMQTTServer.ConnectionCreate(aSocket: TMqttServerSocket;out aConnection: TAsyncConnection): boolean;
 var
   mqttconn: TMQTTConnection;
 begin
-         mqttconn := TMQTTConnection.Create(aRemoteIp);
-         mqttconn.LastOperationIdleSeconds := 3;
-          if not inherited ConnectionAdd(aSocket, mqttconn) then
-            raise ERtspOverHttp.CreateUtf8('inherited %.ConnectionAdd(%) failed',
-              [self, aSocket]);
-          aConnection := mqttconn;
-
+  Result := false;
+  mqttconn := TMQTTConnection.Create(aSocket.RemoteIP);
+  mqttconn.LastOperationIdleSeconds := aSocket.KeepliveTimeOut;
+  mqttconn.FWillTopic := aSocket.WillTopic;
+  mqttconn.FWillMessage := aSocket.WillMessage;
+  mqttconn.FClientId := aSocket.ClientID;
+  if not inherited ConnectionAdd(aSocket.Sock, mqttconn) then
+  begin
+    mqttconn.Free;
+    exit;
+  end;
+  aConnection := mqttconn;
   Log.Add.Log(sllCustom1, 'Connection Count:%', [ConnectionCount], self);
-
   result := true;
-//          log.Log(sllTrace,
-//              'ConnectionCreate added post=%/% for %',
-//              [PtrUInt(aSocket), aConnection.Handle], self);
-
 end;    
 
 procedure TMQTTServer.OnClientClose(connection: TObject);
 begin
   Log.Add.Log(sllCustom1, 'Connection Count:%', [ConnectionCount], self);
+end;
+
+
+procedure TMQTTServer.OnClientsLogs(Level: TSynLogInfo; const Fmt: RawUtf8;
+  const Args: array of const; Instance: TObject);
+begin
+  Log.Add.Log(Level, Fmt, Args, Instance);
 end;
 
 end.

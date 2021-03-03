@@ -13,13 +13,21 @@ uses
   mormot.core.os,
   mormot.core.data,
   mormot.core.log,
+  mormot.db.raw.sqlite3.static,
+  mormot.db.raw.sqlite3,
+  mormot.orm.core,
   mormot.net.async_rw,
-  MqttServer;
+  mormot.rest.http.server,
+  MqttDbServer,
+  MqttService ;
 
-type  
+type
   TMQTTApp = class
   protected
-    mqttserver: TMQTTServer;
+    Fmqttserver: TMQTTServer;
+    Fdberver:TMQTTHttpServer;
+    fServer: TSQLHttpServer;
+    fmodle:TSQLModel;
   public
     constructor Create;
     destructor Destroy; override;
@@ -48,17 +56,40 @@ begin
     //EchoCustom := OnLogEvent;
     EchoToConsole := LOG_VERBOSE; // log all events to the console
   end;
-  mqttserver := TMQTTServer.Create('4009', TSynLog, nil, nil);
-  mqttserver.Clients.Options := [paoWritePollOnly];
+
+  Fmqttserver := TMQTTServer.Create('4009', TSynLog, nil, nil);
+  Fmqttserver.WaitStarted;
+  Fmqttserver.Clients.Options := [paoWritePollOnly];
   //server.Options := [acoVerboseLog];
-  writeln(mqttserver.ClassName, ' running');
+  writeln(Fmqttserver.ClassName, ' running');
   writeln('  performing tests with ', ' concurrent streams using ',
-      mqttserver.Clients.PollRead.PollClass.ClassName, #10);
+      Fmqttserver.Clients.PollRead.PollClass.ClassName, #10);
+  //
+  fmodle := CreateMyModel;
+  Fdberver := TMQTTHttpServer.MyCreate(fmodle,ChangeFileExt(ExeVersion.ProgramFilePath,'data/remotedb.db'));
+  Fdberver.DB.Synchronous := smNormal;
+  Fdberver.DB.LockingMode := lmExclusive;   //lmNormal;//     lmExclusive
+  Fdberver.DB.UseCache := true;
+  //FAdminServer.DB.Execute('VACUUM');
+
+  Fdberver.CreateMissingTables;
+
+  fServer := TSQLHttpServer.Create('65501',[Fdberver],'+',useHttpSocket,1);//,32,secSSL);65500
+  fServer.AccessControlAllowOrigin := '*';
+  fServer.AccessControlAllowCredential := true;
+
+  fServer.RootRedirectToURI('root/Default'); // redirect / to blog/default
 end;
 
 destructor TMQTTApp.Destroy;
 begin
-  mqttserver.Free;
+  fServer.Shutdown;
+  FreeAndNil(fServer);
+
+  Fmqttserver.Free;
+
+  Fdberver.Free;
+  fmodle.Free;
   inherited;
 end;
 
