@@ -12,12 +12,14 @@ uses
   mormot.core.base,
   mormot.core.os,
   mormot.core.data,
+  mormot.core.text,
   mormot.core.log,
   mormot.rest.sqlite3,
   mormot.db.raw.sqlite3,
   mormot.rest.server,
   mormot.rest.core,
-  mormot.orm.core;
+  mormot.orm.core,
+  MqttService;
 
 type
   TSQLRecordTimeStamped = class(TOrm)
@@ -40,13 +42,14 @@ type
 
   TMQTTHttpServer = class(TSQLRestServerDB)
   protected
-    FBackSuc,FBackBusing:Boolean;
-    FBackTotal,FBackFin:Integer;
-    function OnBeforeIrData(Ctxt: TSQLRestServerURIContext): boolean;
-    procedure OnAfterExecProc(Ctxt: TSQLRestServerURIContext);
+    fmqttserver:TMQTTServer;
+    function OnBeforeIrData(Ctxt: TRestServerUriContext): boolean;
+    procedure OnAfterExecProc(Ctxt: TRestServerUriContext);
   public
-    constructor MyCreate(aModel:TOrmModel; const aDBFileName: TFileName);
+    constructor MyCreate(aModel:TOrmModel;mqttserver:TMQTTServer;const aDBFileName: TFileName);
   published
+    procedure getclients(Ctxt: TRestServerUriContext);
+    procedure getclientcount(Ctxt: TRestServerUriContext);
   end;
 
 function CreateMyModel: TOrmModel;
@@ -61,24 +64,33 @@ end;
 
 { TMQTTHttpServer }
 
-constructor TMQTTHttpServer.MyCreate(aModel: TOrmModel;
-  const aDBFileName: TFileName);
+procedure TMQTTHttpServer.getclientcount(Ctxt: TRestServerUriContext);
+begin
+  Ctxt.Returns(Int32ToUtf8(fmqttserver.ConnectionCount));
+end;
+
+procedure TMQTTHttpServer.getclients(Ctxt: TRestServerUriContext);
+begin
+
+end;
+
+constructor TMQTTHttpServer.MyCreate(aModel:TOrmModel;mqttserver:TMQTTServer;const aDBFileName: TFileName);
 begin
   inherited Create(aModel,aDBFileName,false);
-//  OnBeforeURI := {$ifdef FPC}@{$endif}OnBeforeIrData;
+  fmqttserver := mqttserver;
+ // OnBeforeURI := {$ifdef FPC}@{$endif}OnBeforeIrData;
 //  OnAfterURI := {$ifdef FPC}@{$endif}OnAfterExecProc;
 //  ServiceDefine(TServiceCalculator,[ICalculator],sicShared);
 end;
 
-procedure TMQTTHttpServer.OnAfterExecProc(Ctxt: TSQLRestServerURIContext);
+procedure TMQTTHttpServer.OnAfterExecProc(Ctxt: TRestServerUriContext);
 begin
   //
 end;
 
-function TMQTTHttpServer.OnBeforeIrData(
-  Ctxt: TSQLRestServerURIContext): boolean;
+function TMQTTHttpServer.OnBeforeIrData(Ctxt: TRestServerUriContext): boolean;
 begin
-  //
+  Result := (fmqttserver<>nil);
 end;
 
 end.

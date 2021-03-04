@@ -58,7 +58,6 @@ begin
   end;
 
   Fmqttserver := TMQTTServer.Create('4009', TSynLog, nil, nil);
-  Fmqttserver.WaitStarted;
   Fmqttserver.Clients.Options := [paoWritePollOnly];
   //server.Options := [acoVerboseLog];
   writeln(Fmqttserver.ClassName, ' running');
@@ -66,7 +65,8 @@ begin
       Fmqttserver.Clients.PollRead.PollClass.ClassName, #10);
   //
   fmodle := CreateMyModel;
-  Fdberver := TMQTTHttpServer.MyCreate(fmodle,ChangeFileExt(ExeVersion.ProgramFilePath,'data/remotedb.db'));
+  Fdberver := TMQTTHttpServer.MyCreate(fmodle,fmqttserver,
+    ChangeFileExt(ExeVersion.ProgramFilePath,'data/remotedb.db'));
   Fdberver.DB.Synchronous := smNormal;
   Fdberver.DB.LockingMode := lmExclusive;   //lmNormal;//     lmExclusive
   Fdberver.DB.UseCache := true;
@@ -74,7 +74,7 @@ begin
 
   Fdberver.CreateMissingTables;
 
-  fServer := TSQLHttpServer.Create('65501',[Fdberver],'+',useHttpSocket,1);//,32,secSSL);65500
+  fServer := TSQLHttpServer.Create('65505',[Fdberver],'+',useHttpSocket,1);//,32,secSSL);65500
   fServer.AccessControlAllowOrigin := '*';
   fServer.AccessControlAllowCredential := true;
 

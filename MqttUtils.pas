@@ -84,14 +84,14 @@ const
     'RESERVED'	      //  3	Reserved
   );
 
-type
+{type
   TMqttSocket = class(TMqttServerSocket)
   protected
   public
     constructor Create(aServer: TAsyncServer;aTimeOut: PtrInt); reintroduce;
 
     function Login(headerMaxTix:Int64):TMqttLoginResult; override;
-  end;
+  end;     }
 
 function mqtt_getframelen(p:Pointer;len:integer;out lenbyte:integer):integer;
 function mqtt_readstr(p:Pointer;leftlen:integer;out sstr:RawByteString):integer;
@@ -338,7 +338,7 @@ end;
 { TMqttSocket }
 //const
 //  teststr = '00064D514973647003C60009000C64633466323235383063666600197075622F686561746374726C2F646334663232353830636666000A7B22636D64223A38387D000474657374000474657374';
-
+ {
 constructor TMqttSocket.Create(aServer: TAsyncServer; aTimeOut: PtrInt);
 begin
   inherited create(aServer,timeOut);
@@ -422,7 +422,7 @@ begin
 |           |Reserved (0)
 |Keep Alive
 |byte 9     |Keep Alive MSB (0)     |0 |0 |0 |0 |0 |0 |0 |0
-|byte 10    |Keep Alive LSB (10)    |0 |0 |0 |0 |1 |0 |1 |0}
+|byte 10    |Keep Alive LSB (10)    |0 |0 |0 |0 |1 |0 |1 |0
     ///
     SetLength(buf,alen);
     SockRecv(@buf[0],alen);
@@ -519,6 +519,6 @@ begin
     result := mmqttok;
   except
   end;
-end;
+end;    }
 
 end.

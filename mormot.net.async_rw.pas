@@ -216,12 +216,6 @@ type
   TAsyncConnections = class;
   TAsyncServer = class;
 
-  /// abstract class to store one TAsyncConnections connection
-  // - may implement e.g. WebSockets frames, or IoT binary protocol
-  // - each connection will be identified by a TAsyncConnectionHandle integer
-  // - idea is to minimize the resources used per connection, and allow full
-  // customization of the process by overriding the OnRead virtual method (and,
-  // if needed, AfterCreate/AfterWrite/BeforeDestroy/OnLastOperationIdle)
   TAsyncConnection = class(TSynPersistent)
   protected
     fSlot: TPollSocketsSlot;
@@ -229,43 +223,22 @@ type
     fLastOperation: cardinal;
     fRemoteIP: RawUtf8;
     fLastOperationIdleSeconds: cardinal;
-    /// this method is called when the instance is connected to a poll
-    // - default implementation will set fLastOperation content
+    FLoined:Boolean;
     procedure AfterCreate(Sender: TAsyncConnections); virtual;
-    /// this method is called when the some input data is pending on the socket
-    // - should extract frames or requests from fSlot.readbuf, and handle them
-    // - this is where the input should be parsed and extracted according to
-    // the implemented procotol; fSlot.readbuf could be kept as temporary
-    // buffer during the parsing, and voided by the caller once processed
-    // - Sender.Write() could be used for asynchronous answer sending
-    // - Sender.LogVerbose() allows logging of escaped data
-    // - could return sorClose to shutdown the socket, e.g. on parsing error
     function OnRead(Sender: TAsyncConnections): TPollAsyncSocketOnRead;
       virtual; abstract;
-    /// this method is called when some data has been written to the socket
-    // - default implementation will do nothing
     procedure AfterWrite(Sender: TAsyncConnections); virtual;
-    /// this method is called when the instance is about to be deleted from a poll
-    // - default implementation will reset fHandle to 0
     procedure BeforeDestroy(Sender: TAsyncConnections); virtual;
   public
     /// initialize this instance
     constructor Create(const aRemoteIP: RawUtf8); reintroduce; virtual;
     /// read-only access to the socket number associated with this connection
-    property Socket: TNetSocket
-      read fSlot.socket;
+    property Socket: TNetSocket read fSlot.socket;
+    property Loined: Boolean read FLoined write FLoined;
   published
-    /// the associated remote IP4/IP6, as text
-    property RemoteIP: RawUtf8
-      read fRemoteIP;
-    /// read-only access to the handle number associated with this connection
-    property Handle: TAsyncConnectionHandle
-      read fHandle;
-    /// will execute TAsyncConnection.OnLastOperationIdle after an idle period
-    // - could be used to send heartbeats after read/write inactivity
-    // - equals 0 (i.e. disabled) by default
-    property LastOperationIdleSeconds: cardinal
-      read fLastOperationIdleSeconds write fLastOperationIdleSeconds;
+    property RemoteIP: RawUtf8 read fRemoteIP;
+    property Handle: TAsyncConnectionHandle  read fHandle;
+    property LastOperationIdleSeconds: cardinal  read fLastOperationIdleSeconds write fLastOperationIdleSeconds;
   end;
 
   /// meta-class of one TAsyncConnections connection
@@ -311,42 +284,13 @@ type
     constructor Create(aOwner: TAsyncConnections; aProcess: TPollSocketEvent);
       reintroduce;
   end;
-
-  TMqttServerSocket = class(TCrtSocket)
+  TAsyncIdleCheckThread = class(TSynThread)
   protected
-    fRemoteConnectionID: Int64;
-    fServer: TAsyncServer;
-
-    FUser,FPaswd,FClientID,FWillTopic,FWillMessage:RawByteString;
-    FVer,FFlag:byte;
-    FKeepliveTimeOut:word;
+    fOwner: TAsyncConnections;
+    procedure Execute; override;
   public
-    constructor Create(aServer: TAsyncServer;timeout:Integer); reintroduce;
-    property RemoteConnectionID: Int64 read fRemoteConnectionID;
-
-    function Login(headerMaxTix:Int64):TMqttLoginResult; virtual;
-
-    property User:RawByteString read FUser;
-    property Paswd:RawByteString read FPaswd;
-    property ClientID:RawByteString read FClientID;
-    property WillTopic:RawByteString read FWillTopic;
-    property WillMessage:RawByteString read FWillMessage;
-    property KeepliveTimeOut:word read FKeepliveTimeOut;
-  end;
-
-  TSynThreadPoolTMqttServer = class(TSynThreadPool)
-  protected
-    fServer: TAsyncServer;
-    fMaxBodyThreadCount: integer;
-    {$ifndef USE_WINIOCP}
-    function QueueLength: integer; override;
-    {$endif USE_WINIOCP}
-    // here aContext is a THttpServerSocket instance
-    procedure Task(aCaller: TSynThread; aContext: Pointer); override;
-    procedure TaskAbort(aContext: Pointer); override;
-  public
-    constructor Create(Server: TAsyncServer; NumberOfThreads: integer = 32); reintroduce;
-    property MaxBodyThreadCount: integer read fMaxBodyThreadCount write fMaxBodyThreadCount;
+    constructor Create(aOwner: TAsyncConnections);
+      reintroduce;
   end;
 
   /// low-level options for TAsyncConnections processing
@@ -382,7 +326,7 @@ type
     fConnectionCount: integer;
     fConnections: TDynArray; // fConnection[] sorted by TAsyncConnection.Handle
     fClients: TAsyncConnectionsSockets;
-    fThreads: array of TAsyncConnectionsThread;
+    fThreads: array of TSynThread;
     fLastHandle: integer;
     fLog: TSynLogClass;
     fTempConnectionForSearchPerHandle: TAsyncConnection;
@@ -390,15 +334,12 @@ type
     fConnectionLock: TSynLocker;
 
     procedure IdleEverySecond;
-    function ConnectionCreate(aSocket: TMqttServerSocket;out aConnection: TAsyncConnection): boolean; virtual;
+    function ConnectionCreate(aSocket: TNetSocket; const aRemoteIp: RawUtf8;
+      out aConnection: TAsyncConnection): boolean; virtual;
     function ConnectionAdd(aSocket: TNetSocket; aConnection: TAsyncConnection): boolean; virtual;
     function ConnectionDelete(aHandle: TAsyncConnectionHandle): boolean; overload; virtual;
     function ConnectionDelete(aConnection: TAsyncConnection; aIndex: integer): boolean; overload;
     procedure OnClientClose(connection: TObject); virtual;
-
-    procedure Process(ClientSock: TMqttServerSocket;
-        ConnectionID: int64;
-        ConnectionThread: TSynThread); virtual;
   public
     /// initialize the multiple connections
     // - warning: currently reliable only with aThreadPoolCount=1
@@ -465,35 +406,20 @@ type
 
   TAsyncServer = class(TAsyncConnections)
   protected
-    FPort:RawUtf8;
-    fSock: TCrtSocket;
+    fServer: TCrtSocket;
     fExecuteFinished: boolean;
-    fExecuteState: (esNotStarted, esBinding, esRunning, esFinished);
-
-    fThreadPool: TSynThreadPoolTMqttServer;
-    fStats: array[TMqttLoginResult] of integer;
-    fHttpQueueLength: cardinal;
-
-    fServerConnectionCount: integer;
-    fServerConnectionActive: integer;
-    fExecuteMessage: string;
-    fProcessCS : TRTLCriticalSection;
     procedure Execute; override;
-    function getCreateSocket:TMqttServerSocket; virtual;
   public
+    /// run the TCP server, listening on a supplied IP port
     constructor Create(const aPort: RawUtf8;
       const OnStart, OnStop: TOnNotifyThread;
       aStreamClass: TAsyncConnectionClass; const ProcessName: RawUtf8;
       aLog: TSynLogClass; aOptions: TAsyncConnectionsOptions;
-      aThreadPoolCount,AceptPoolCount: integer); reintroduce; virtual;
+      aThreadPoolCount: integer = 1); reintroduce; virtual;
     destructor Destroy; override;
-    procedure WaitStarted(Seconds: integer = 30); virtual;
   published
-    property Sock: TCrtSocket read fSock;
-    property ServerConnectionActive: integer
-      read fServerConnectionActive write fServerConnectionActive;
-    property ServerConnectionCount: integer
-      read fServerConnectionCount write fServerConnectionCount;
+    /// access to the TCP server socket
+    property ServerSocket: TCrtSocket read fServer;
   end;
 
 implementation
@@ -928,6 +854,7 @@ constructor TAsyncConnection.Create(const aRemoteIP: RawUtf8);
 begin
   inherited Create;
   fRemoteIP := aRemoteIP;
+  FLoined := false;
 end;
 
 procedure TAsyncConnection.AfterCreate(Sender: TAsyncConnections);
@@ -1037,13 +964,10 @@ begin
 end;
 
 procedure TAsyncConnectionsThread.Execute;
-var
-  idletix: Int64;
 begin
   SetCurrentThreadName('% % %', [fOwner.fProcessName, self, ToText(fProcess)^]);
   fOwner.NotifyThreadStart(self);
   try
-    idletix := mormot.core.os.GetTickCount64 + 1000;
     while not Terminated and
           (fOwner.fClients <> nil) do
     begin
@@ -1051,14 +975,7 @@ begin
           pseRead:
             fOwner.fClients.ProcessRead(30000);
           pseWrite:
-            begin
-              fOwner.fClients.ProcessWrite(1000);
-              if mormot.core.os.GetTickCount64 >= idletix then
-              begin
-                fOwner.IdleEverySecond; // may take some time -> retrieve ticks again
-                idletix := mormot.core.os.GetTickCount64 + 1000;
-              end;
-            end;
+            fOwner.fClients.ProcessWrite(30000);
         else
           raise EAsyncConnections.CreateUtf8('%.Execute: unexpected fProcess=%',
             [self, ToText(fProcess)^]);
@@ -1105,10 +1022,12 @@ begin
   fTempConnectionForSearchPerHandle := fStreamClass.Create('');
   fOptions := aOptions;
   inherited Create(false, OnStart, OnStop, ProcessName);
-  SetLength(fThreads, aThreadPoolCount + 1);
+
+  SetLength(fThreads, aThreadPoolCount + 2);
   fThreads[0] := TAsyncConnectionsThread.Create(self, pseWrite);
+  fThreads[1] := TAsyncIdleCheckThread.Create(self);
   for i := 1 to aThreadPoolCount do
-    fThreads[i] := TAsyncConnectionsThread.Create(self, pseRead);
+    fThreads[i+1] := TAsyncConnectionsThread.Create(self, pseRead);
 end;
 
 destructor TAsyncConnections.Destroy;
@@ -1136,7 +1055,8 @@ begin
   fTempConnectionForSearchPerHandle.Free;
 end;
 
-function TAsyncConnections.ConnectionCreate(aSocket: TMqttServerSocket;out aConnection: TAsyncConnection): boolean;
+function TAsyncConnections.ConnectionCreate(aSocket: TNetSocket; const aRemoteIp: RawUtf8;
+      out aConnection: TAsyncConnection): boolean;
 begin
   result := false;
 end;
@@ -1307,12 +1227,6 @@ begin
 
 end;
 
-procedure TAsyncConnections.Process(ClientSock: TMqttServerSocket;
-  ConnectionID: int64; ConnectionThread: TSynThread);
-begin
-
-end;
-
 procedure TAsyncConnections.IdleEverySecond;
 var
   i: integer;
@@ -1330,12 +1244,10 @@ begin
       allowed := UnixTimeUtc - aconn.LastOperationIdleSeconds;
       if aconn.fLastOperation < allowed then
       begin
-        fLog.Add.Log(sllCustom1, 'Connection Idle % To Close it', [aconn], self);
+        fLog.Add.Log(sllCustom1, 'IDLE % recvd=%',[aconn,BinToHex(aconn.fSlot.readbuf)], self);
         if not fClients.Stop(aconn) then
           fLog.Add.Log(sllDebug, 'ConnectionRemove: Stop=false for %', [aconn], self);
 
-        if not fClients.Stop(aconn) then
-          fLog.Add.Log(sllDebug,'ConnectionRemove: Stop=false for %',[aconn],self);
         if Terminated then  break;
         ConnectionDelete(aconn,i);
       end else
@@ -1353,239 +1265,107 @@ end;
 constructor TAsyncServer.Create(const aPort: RawUtf8;
   const OnStart, OnStop: TOnNotifyThread; aStreamClass: TAsyncConnectionClass;
   const ProcessName: RawUtf8; aLog: TSynLogClass;
-  aOptions: TAsyncConnectionsOptions; aThreadPoolCount,AceptPoolCount: integer);
+  aOptions: TAsyncConnectionsOptions; aThreadPoolCount: integer);
 begin
-  FPort := aport;
-  fSock := TCrtSocket.Bind(FPort);
-  InitializeCriticalSection(fProcessCS);
+  RemoteIPLocalHostAsVoidInServers := false;
+  fServer := TCrtSocket.Bind(aPort);
   inherited Create(OnStart, OnStop, aStreamClass, ProcessName, aLog,
     aOptions, aThreadPoolCount);
-  if AceptPoolCount > 0 then
-  begin
-    fThreadPool := TSynThreadPoolTMqttServer.Create(self, AceptPoolCount);
-    fHttpQueueLength := 1000;
-  end;
 end;
 
 destructor TAsyncServer.Destroy;
 var
   endtix: Int64;
-  callback: TNetSocket; // touch-and-go to the server to release main Accept()
+  touchandgo: TNetSocket; // paranoid ensure Accept() is released
 begin
   Terminate;
-  if fThreadPool <> nil then
-    fThreadPool.fTerminated := true; // notify background process
-
-  if (fExecuteState = esRunning) and
-     (Sock <> nil) then
+  if fServer <> nil then
   begin
-    if Sock.SocketLayer <> nlUNIX then
-      Sock.Close; // shutdown TCP/UDP socket to unlock Accept() in Execute
-    if NewSocket(Sock.Server, Sock.Port, Sock.SocketLayer,
-       {dobind=}false, 10, 10, 10, 0, callback) = nrOK then
-      // Windows TCP/UDP socket may not release Accept() until connected
-      callback.ShutdownAndClose({rdwr=}false);
-    if Sock.SockIsDefined then
-      Sock.Close; // nlUNIX expects shutdown after accept() returned
+    fServer.Close; // shutdown the socket to unlock Accept() in Execute
+    if NewSocket('127.0.0.1', fServer.Port, nlTCP, false, 1000, 0, 0, 0, touchandgo) = nrOk then
+      touchandgo.ShutdownAndClose(false);
   end;
-  endtix := mormot.core.os.GetTickCount64 + 20000;
-  EnterCriticalSection(fProcessCS);
-  try
-      repeat // wait for all THttpServerResp.Execute to be finished
-        if (fExecuteState <> esRunning) then
-          break;
-        LeaveCriticalSection(fProcessCS);
-        SleepHiRes(10);
-        EnterCriticalSection(fProcessCS);
-      until mormot.core.os.GetTickCount64 > endtix;
-  finally
-    LeaveCriticalSection(fProcessCS);
-    FreeAndNil(fThreadPool); // release all associated threads and I/O completion
-    FreeAndNil(fSock);
-    inherited Destroy;       // direct Thread abort, no wait till ended
-    DeleteCriticalSection(fProcessCS);
-  end;
-end;
-
-function TAsyncServer.getCreateSocket:TMqttServerSocket;
-begin
-  Result := nil;
+  endtix := mormot.core.os.GetTickCount64 + 10000;
+  inherited Destroy;
+  while not fExecuteFinished and
+        (mormot.core.os.GetTickCount64 < endtix) do
+    SleepHiRes(1); // wait for Execute to be finalized (unlikely)
+  fServer.Free;
 end;
 
 procedure TAsyncServer.Execute;
 var
-  cltsock: TNetSocket;
-  cltaddr: TNetAddr;
-  cltservsock: TMqttServerSocket;
+  client: TNetSocket;
+  connection: TAsyncConnection;
   res: TNetResult;
+  sin: TNetAddr;
+  ip: RawUtf8;
 begin
-  // THttpServerGeneric thread preparation: launch any OnHttpThreadStart event
-  fExecuteState := esBinding;
+  SetCurrentThreadName('% % Accept', [fProcessName, self]);
   NotifyThreadStart(self);
-  // main server process loop
+  if fServer.Sock <> nil then
   try
-    {$ifdef OSLINUX}
-    // in case was started by systemd, listening socket is created by another
-    // process and do not interrupt while process got a signal. So we need to
-    // set a timeout to unlock accept() periodically and check for termination
-    if FPort = '' then // external socket
-      fSock.ReceiveTimeout := 1000; // unblock accept every second
-    {$endif OSLINUX}
-    fExecuteState := esRunning;
-    if not fSock.SockIsDefined then // paranoid (Bind would have raise an exception)
-      raise EHttpServer.CreateUtf8('%.Execute: %.Bind failed', [self, fSock]);
     while not Terminated do
     begin
-      res := Sock.Sock.Accept(cltsock, cltaddr);
-      if not (res in [nrOK, nrRetry]) then
+      res := fServer.Sock.Accept(client, sin);
+      if res <> nrOk then
         if Terminated then
           break
         else
         begin
-          SleepHiRes(1); // failure (too many clients?) -> wait and retry
+          fLog.Add.Log(sllWarning, 'Execute: Accept()=%', [ToText(res)^], self);
+          SleepHiRes(1);
           continue;
         end;
-      if Terminated or
-         (Sock = nil) then
+      if Terminated then
       begin
-        cltsock.ShutdownAndClose({rdwr=}true);
-        break; // don't accept input if server is down
+        client.ShutdownAndClose({rdwr=}false);
+        break;
       end;
-      LockedInc32(@fServerConnectionCount);
-      LockedInc32(@fServerConnectionActive);
-      //----------------------
-      cltservsock := getCreateSocket;
-      cltservsock.AcceptRequest(cltsock, @cltaddr);
-      if not fThreadPool.Push(pointer(PtrUInt(cltservsock)),true) then
-        begin
-          // returned false if there is no idle thread in the pool, and queue is full
-          cltservsock.Free; // will call DirectShutdown(cltsock)
-        end;
+      ip := sin.IP;
+      if ConnectionCreate(client, ip, connection) then
+        if fClients.Start(connection) then
+          fLog.Add.Log(sllTrace, 'Execute: Accept()=%', [connection], self)
+        else
+          connection.Free
+      else
+        client.ShutdownAndClose(false);
     end;
   except
     on E: Exception do
-      // any exception would break and release the thread
-      fExecuteMessage := E.ClassName + ' [' + E.Message + ']';
+      fLog.Add.Log(sllWarning, 'Execute raised % -> terminate %',
+        [E.ClassType, fProcessName], self);
   end;
-  EnterCriticalSection(fProcessCS);
-  fExecuteState := esFinished;
-  LeaveCriticalSection(fProcessCS);
+  fLog.Add.Log(sllDebug, 'Execute: % done', [fProcessName], self);
+  fExecuteFinished := true;
 end;
 
-procedure TAsyncServer.WaitStarted(Seconds: integer);
-var
-  tix: Int64;
-  ok: boolean;
+{ TAsyncIdleCheckThread }
+
+constructor TAsyncIdleCheckThread.Create(aOwner: TAsyncConnections);
 begin
-  tix := mormot.core.os.GetTickCount64 + Seconds * 1000; // never wait forever
-  repeat
-    EnterCriticalSection(fProcessCS);
-    ok := Terminated or
-          (fExecuteState in [esRunning, esFinished]);
-    LeaveCriticalSection(fProcessCS);
-    if ok then
-      exit;
-    Sleep(1); // warning: waits typically 1-15 ms on Windows
-    if mormot.core.os.GetTickCount64 > tix then
-      raise EAsyncConnections.CreateUtf8('%.WaitStarted timeout after % seconds [%]',
-        [self, Seconds, fExecuteMessage]);
-  until false;
+  fOwner := aOwner;
+  fOnThreadTerminate := fOwner.fOnThreadTerminate;
+  inherited Create(false);
 end;
 
-{ TSynThreadPoolTMqttServer }
-
-constructor TSynThreadPoolTMqttServer.Create(Server: TAsyncServer;
-  NumberOfThreads: integer);
+procedure TAsyncIdleCheckThread.Execute;
 begin
-  fServer := Server;
-  fOnThreadTerminate := fServer.fOnThreadTerminate;
-  fMaxBodyThreadCount := THREADPOOL_MAXWORKTHREADS;
-  inherited Create(NumberOfThreads,
-    {$ifdef USE_WINIOCP} INVALID_HANDLE_VALUE {$else} {queuepending=}true{$endif},
-    fServer.ProcessName);
-end;
-
-{$ifndef USE_WINIOCP}
-function TSynThreadPoolTMqttServer.QueueLength: integer;
-begin
-  if fServer = nil then
-    result := 10000
-  else
-    result := fServer.fHttpQueueLength;
-end;
-{$endif USE_WINIOCP}
-
-function mqqtToText(res: TMqttLoginResult): PShortString;
-begin
-  result := GetEnumName(TypeInfo(TMqttLoginResult), ord(res));
-end;
-
-procedure TSynThreadPoolTMqttServer.Task(aCaller: TSynThread;
-  aContext: Pointer);
-var
-  srvsock: TMqttServerSocket;
-  headertix: Int64;
-  res: TMqttLoginResult;
-  ip: RawUtf8;
-  connection: TAsyncConnection;
-begin
-  srvsock := aContext;
+  SetCurrentThreadName('% % %', [fOwner.fProcessName, self, 'ChkIdle']);
+  fOwner.NotifyThreadStart(self);
   try
-    if fServer.Terminated then
-      exit;
-    // get Header of incoming request in the thread pool
-    headertix := 3000;
-    if headertix > 0 then
-      headertix := headertix + GetTickCount64;
-    res := srvsock.Login(headertix);
-    if (fServer = nil) or
-       fServer.Terminated then
-      exit;
-
-    LockedInc32(@fServer.fStats[res]);
-    case res of
-      mmqttok:
-        begin
-          if Assigned(fServer.Sock.OnLog) then
-            fServer.Sock.OnLog(sllCustom1, ' Accept ip=%', [ip], self);
-          if fServer.ConnectionCreate(srvsock,connection) then
-          if fServer.fClients.Start(connection) then
-          begin
-            if Assigned(fServer.Sock.OnLog) then
-              fServer.Sock.OnLog(sllTrace, 'Execute: Accept()=%', [connection], self)
-          end else
-            connection.Free;
-          srvsock := nil; // THttpServerResp will own and free srvsock
-        end;
-    else if Assigned(fServer.Sock.OnLog) then
-      fServer.Sock.OnLog(sllTrace, 'Task: close after GetRequest=% from %',
-          [mqqtToText(res)^, srvsock.RemoteIP], self);
+    while not Terminated and
+          (fOwner.fClients <> nil) do
+    begin
+      fOwner.IdleEverySecond; // may take some time -> retrieve ticks again
+      sleep(1000);
     end;
-  finally
-    srvsock.Free;
+  except
+    on E: Exception do
+      fOwner.fLog.Add.Log(sllWarning, 'Execute raised a % -> terminate % thread',
+        [E.ClassType, fOwner.fStreamClass], self);
   end;
-end;
-
-procedure TSynThreadPoolTMqttServer.TaskAbort(aContext: Pointer);
-begin
-  TMqttServerSocket(aContext).Free;
-end;
-
-constructor TMqttServerSocket.Create(aServer: TAsyncServer;timeout:Integer);
-begin
-  inherited Create(timeout);
-  if aServer <> nil then // nil e.g. from TRtspOverHttpServer
-  begin
-    fServer := aServer;
-    fSocketLayer := aServer.Sock.SocketLayer;
-    TLS.Enabled := aServer.Sock.TLS.Enabled; // not implemented yet
-    OnLog := aServer.Sock.OnLog;
-  end;
-end;
-
-function TMqttServerSocket.Login(headerMaxTix:Int64):TMqttLoginResult;
-begin
-  Result :=  mmqttError;
+  fOwner.fLog.Add.Log(sllDebug, 'Execute: done', self);
 end;
 
 end.
