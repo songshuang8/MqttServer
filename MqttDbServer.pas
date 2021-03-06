@@ -14,6 +14,7 @@ uses
   mormot.core.data,
   mormot.core.text,
   mormot.core.log,
+  mormot.core.json,
   mormot.rest.sqlite3,
   mormot.db.raw.sqlite3,
   mormot.rest.server,
@@ -50,6 +51,8 @@ type
   published
     procedure getclients(Ctxt: TRestServerUriContext);
     procedure getclientcount(Ctxt: TRestServerUriContext);
+
+    procedure getblackip(Ctxt: TRestServerUriContext);
   end;
 
 function CreateMyModel: TOrmModel;
@@ -64,14 +67,38 @@ end;
 
 { TMQTTHttpServer }
 
+procedure TMQTTHttpServer.getblackip(Ctxt: TRestServerUriContext);
+var
+  i:integer;
+  //sstr:ShortString;
+begin
+  fmqttserver.BlackBook.Safe.Lock;
+  try
+    //sstr := PPShortString(PPAnsiChar(fmqttserver.BlackBook)^ + vmtClassName)^^;
+    Ctxt.Returns(fmqttserver.BlackBook);
+  finally
+    fmqttserver.BlackBook.Safe.Unlock;
+  end;
+end;
+
 procedure TMQTTHttpServer.getclientcount(Ctxt: TRestServerUriContext);
 begin
-  Ctxt.Returns(Int32ToUtf8(fmqttserver.ConnectionCount));
+  fmqttserver.Lock;
+  try
+    Ctxt.Returns(Int32ToUtf8(fmqttserver.ConnectionCount));
+  finally
+    fmqttserver.Unlock;
+  end;
 end;
 
 procedure TMQTTHttpServer.getclients(Ctxt: TRestServerUriContext);
 begin
-
+  fmqttserver.Lock;
+  try
+    Ctxt.Returns(ObjArrayToJson(fmqttserver.Connection));
+  finally
+    fmqttserver.Unlock;
+  end;
 end;
 
 constructor TMQTTHttpServer.MyCreate(aModel:TOrmModel;mqttserver:TMQTTServer;const aDBFileName: TFileName);

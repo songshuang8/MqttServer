@@ -58,11 +58,8 @@ begin
   end;
 
   Fmqttserver := TMQTTServer.Create('4009', TSynLog, nil, nil);
-  Fmqttserver.Clients.Options := [paoWritePollOnly];
   //server.Options := [acoVerboseLog];
   writeln(Fmqttserver.ClassName, ' running');
-  writeln('  performing tests with ', ' concurrent streams using ',
-      Fmqttserver.Clients.PollRead.PollClass.ClassName, #10);
   //
   fmodle := CreateMyModel;
   Fdberver := TMQTTHttpServer.MyCreate(fmodle,fmqttserver,
