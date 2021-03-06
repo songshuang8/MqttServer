@@ -363,7 +363,6 @@ begin
   fLog := aLog;
   inherited Create(aHttpPort, aOnStart, aOnStop, TMQTTConnection, 'MQTTSvr', aLog, aOptions,22);
   ServerSocket.OnLog := OnClientsLogs;
-  AppendBadClient('1.2.2.1');
 end;
 
 destructor TMQTTServer.Destroy;

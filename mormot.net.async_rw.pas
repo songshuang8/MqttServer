@@ -891,18 +891,28 @@ begin
 end;
 
 procedure TAsyncConnectionsThread.Execute;
+var
+  idletix: Int64;
 begin
   SetCurrentThreadName('% % %', [fOwner.fProcessName, self, ToText(fProcess)^]);
   fOwner.NotifyThreadStart(self);
   try
+    idletix := mormot.core.os.GetTickCount64 + 1000;
     while not Terminated and
           (fOwner.fClients <> nil) do
     begin
         case fProcess of
           pseRead:
-            fOwner.fClients.ProcessRead(30000);
+            begin
+              fOwner.fClients.ProcessRead(1000);
+              if (mormot.core.os.GetTickCount64 >= idletix) then
+              begin
+                fOwner.IdleEverySecond; // may take some time -> retrieve ticks again
+                idletix := mormot.core.os.GetTickCount64 + 1000;
+              end;
+            end;
           pseWrite:
-            fOwner.fClients.ProcessWrite(30000);
+            fOwner.fClients.ProcessWrite(1000);
           pseError:
             begin
               fOwner.IdleEverySecond; // may take some time -> retrieve ticks again
@@ -958,11 +968,11 @@ begin
   fOptions := aOptions;
   inherited Create(false, OnStart, OnStop, ProcessName);
 
-  SetLength(fThreads, aThreadPoolCount + 2);
+  SetLength(fThreads, aThreadPoolCount + 1);
   fThreads[0] := TAsyncConnectionsThread.Create(self, pseWrite);
-  fThreads[1] := TAsyncConnectionsThread.Create(self,pseError);
+  //fThreads[1] := TAsyncConnectionsThread.Create(self,pseError);
   for i := 1 to aThreadPoolCount do
-    fThreads[i+1] := TAsyncConnectionsThread.Create(self, pseRead);
+    fThreads[i] := TAsyncConnectionsThread.Create(self, pseRead);
 end;
 
 destructor TAsyncConnections.Destroy;
@@ -1219,33 +1229,35 @@ var
   i: integer;
   allowed: cardinal;
   aconn: TAsyncConnection;
+  IdleArr: TDynArray;
+  IntegerArr: TIntegerDynArray;
 begin
   if Terminated then
     exit;
+  IdleArr.Init(TypeInfo(TIntegerDynArray),IntegerArr);
   fConnectionLock.Lock;
   try
-    i := 0;
-    while i<fConnectionCount do
+    for i:=0 to fConnectionCount-1 do
     begin
       aconn := fConnection[i];
       allowed := UnixTimeUtc - aconn.fCanIdleLen;
       if aconn.fLastOperation < allowed then
       begin
         if (not aconn.FLoined) and (aconn.fSlot.readbuf='') then
-          AppendBadClient(aconn.fRemoteIP);
-        fLog.Add.Log(sllCustom1, 'IDLE % recvd=%',[aconn,BinToHex(aconn.fSlot.readbuf)], self);
-        if not fClients.Stop(aconn) then
-          fLog.Add.Log(sllDebug, 'ConnectionRemove: Stop=false for %', [aconn], self);
-
-        if Terminated then  break;
-        ConnectionDelete(aconn,i);
-      end else
-        inc(i);
+           AppendBadClient(aconn.fRemoteIP);
+        IdleArr.Add(aconn.handle);
+        //if not fClients.Stop(aconn) then
+        //  fLog.Add.Log(sllDebug, 'ConnectionRemove: Stop=false for %', [aconn], self);
+//        ConnectionDelete(aconn,i);
+      end;
+      if Terminated then  exit;
     end;
   finally
     fConnectionLock.UnLock;
   end;
-
+  //
+  for i:=0 to High(IntegerArr) do
+    ConnectionRemove(IntegerArr[i]);
 end;
 
 
