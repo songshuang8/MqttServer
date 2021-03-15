@@ -19,13 +19,15 @@ uses
   mormot.core.threads,
   mormot.core.log,
   mormot.core.rtti,
-  mormot.net.sock,
-  mormot.net.server; // for multi-threaded process
+  mormot.net.sock;
+//  mormot.net.server; // for multi-threaded process
 
 
 { ******************** Low-Level Non-blocking Connections }
 
 type
+  TAsyncConnectionHandle = type integer;
+
   TBlackObj = class
     count:Cardinal;
     lasttime:Cardinal;
@@ -101,6 +103,7 @@ type
     fReadBytes: Int64;
     fWriteBytes: Int64;
     fProcessing: integer;
+    fWriteDirect:boolean;
     function GetCount: integer;
     // warning: abstract methods below should be properly overriden
     // return low-level socket information from connection instance
@@ -110,7 +113,7 @@ type
     // called when slot.writebuf has been sent through the socket
     procedure AfterWrite(connection: TObject); virtual; abstract;
     // pseClosed: should do connection.free - Stop() has been called (socket=0)
-    procedure OnClose(connection: TObject); virtual; abstract;
+    procedure OnClose(aHandle: TAsyncConnectionHandle{;connection: TObject}); virtual; abstract;
     // pseError: return false to close socket and connection (calling OnClose)
     function OnError(connection: TObject; events: TPollSocketEvents): boolean;
       virtual; abstract;
@@ -186,7 +189,6 @@ type
 
   /// 32-bit integer value used to identify an asynchronous connection
   // - will start from 1, and increase during the TAsyncConnections live-time
-  TAsyncConnectionHandle = type integer;
 
   TAsyncConnections = class;
   TAsyncServer = class;
@@ -233,7 +235,7 @@ type
     function SlotFromConnection(connection: TObject): PPollSocketsSlot; override;
     function OnRead(connection: TObject): TPollAsyncSocketOnRead; override;
     procedure AfterWrite(connection: TObject); override;
-    procedure OnClose(connection: TObject); override;
+    procedure OnClose(aHandle: TAsyncConnectionHandle{;connection: TObject}); override;
     function OnError(connection: TObject; events: TPollSocketEvents): boolean; override;
   public
     /// add some data to the asynchronous output buffer of a given connection
@@ -273,6 +275,18 @@ type
     acoLastOperationNoRead,
     acoLastOperationNoWrite);
 
+  TServerGeneric = class(TSynThread)
+  protected
+    fProcessName: RawUtf8;
+    fOnHttpThreadStart: TOnNotifyThread;
+    procedure SetOnTerminate(const Event: TOnNotifyThread); virtual;
+    procedure NotifyThreadStart(Sender: TSynThread);
+  public
+    /// initialize the server instance, in non suspended state
+    constructor Create(CreateSuspended: boolean;
+      const OnStart, OnStop: TOnNotifyThread;
+      const ProcessName: RawUtf8); reintroduce; virtual;
+  end;
   /// implements an abstract thread-pooled high-performance TCP clients or server
   // - internal TAsyncConnectionsSockets will handle high-performance process
   // of a high number of long-living simultaneous connections
@@ -282,7 +296,7 @@ type
   // two file descriptors: you may better add the following line to your
   // /etc/limits.conf or /etc/security/limits.conf system file:
   // $ * hard nofile 65535
-  TAsyncConnections = class(TServerGeneric)
+  TAsyncConnections = class(TServerGeneric)        //            TServerGeneric
   protected
     fBlackBook:TRawUtf8List;
     fStreamClass: TAsyncConnectionClass;
@@ -449,6 +463,7 @@ var
   c: TPollSocketClass;
 begin
   inherited Create;
+  fWriteDirect := true;
   c := PollSocketClass;
   fRead := TPollSockets.Create(c);
   { TODO : try TPollSocketEPoll for fWrite on LINUXNOTBSD ? }
@@ -586,7 +601,8 @@ var
   tag: TPollSocketTag;
   slot: PPollSocketsSlot;
   P: PByte;
-  previous: integer;
+  res: TNetResult;
+  sent, previous: integer;
 begin
   result := false;
   if (datalen <= 0) or
@@ -604,6 +620,36 @@ begin
     try
       P := @data;
       previous := length(slot.writebuf);
+      if (previous = 0) and fWriteDirect then
+        repeat
+          // try to send now in non-blocking mode (works most of the time)
+          if fWrite.Terminated or
+             (slot.socket = nil) then
+            exit;
+          sent := datalen;
+          res := slot.socket.Send(P, sent);
+          if slot.socket = nil then
+            exit;  // Stop() called
+          if res = nrRetry then
+            break; // fails now -> retry later in ProcessWrite
+          if res <> nrOK then
+            exit;  // connection closed or broken -> abort
+          inc(fWriteCount);
+          inc(fWriteBytes, sent);
+          dec(datalen, sent);
+          if datalen = 0 then
+          begin
+            try
+              // notify everything written
+              AfterWrite(connection);
+              result := true;
+            except
+              result := false;
+            end;
+            exit;
+          end;
+          inc(P, sent);
+        until false;
         // use fWrite output polling for the remaining data in ProcessWrite
       AppendData(slot.writebuf, P^, datalen);
       if previous > 0 then // already subscribed
@@ -627,15 +673,16 @@ var
   slot: PPollSocketsSlot;
   recved, added: integer;
   res: TNetResult;
-  temp: array[0..$7fff] of byte; // read up to 32KB per chunk
+  temp: array[0..2048] of byte; // read up to 32KB per chunk
 
   procedure CloseConnection(withinreadlock: boolean);
   begin
     if withinreadlock then
       slot.UnLock({writer=}false); // Stop() will try to acquire this lock
-    Stop(connection); // shutdown and set socket:=0 + acquire locks
+
+    //Stop(connection); // shutdown and set socket:=0 + acquire locks
     try
-      OnClose(connection); // now safe to perform connection.Free
+      OnClose((connection as TAsyncConnection).Handle); // now safe to perform connection.Free
     except
       connection := nil;   // user code may be unstable
     end;
@@ -807,13 +854,14 @@ end;
 
 { TAsyncConnectionsSockets }
 
-procedure TAsyncConnectionsSockets.OnClose(connection: TObject);
+procedure TAsyncConnectionsSockets.OnClose(aHandle: TAsyncConnectionHandle{;connection: TObject});
 begin
-  // caller did call Stop() before calling OnClose (socket=0)
-  if connection=nil then exit;      //add by me
-  fOwner.fLog.Add.Log(sllTrace, 'OnClose%', [connection], self);
-  fOwner.ConnectionDelete((connection as TAsyncConnection).Handle); // do connection.Free
-  fOwner.OnClientClose(connection);
+//  // caller did call Stop() before calling OnClose (socket=0)
+//  if connection=nil then exit;      //add by me
+//  fOwner.fLog.Add.Log(sllTrace, 'OnClose%', [connection], self);
+//  fOwner.ConnectionDelete((connection as TAsyncConnection).Handle); // do connection.Free
+//  fOwner.OnClientClose(connection);
+   fowner.ConnectionRemove(aHandle);
 end;
 
 function TAsyncConnectionsSockets.OnError(connection: TObject; events:
@@ -822,7 +870,7 @@ begin
   fOwner.fLog.Add.Log(sllDebug,
     'OnError% events=[%] -> free socket and instance', [connection,
     GetSetName(TypeInfo(TPollSocketEvents), events)], self);
-  result := acoOnErrorContinue in fOwner.Options; // false=close by default
+  result := false;// acoOnErrorContinue in fOwner.Options; // false=close by default
 end;
 
 function TAsyncConnectionsSockets.OnRead(connection: TObject): TPollAsyncSocketOnRead;
@@ -891,28 +939,28 @@ begin
 end;
 
 procedure TAsyncConnectionsThread.Execute;
-var
-  idletix: Int64;
+//var
+//  idletix: Int64;
 begin
   SetCurrentThreadName('% % %', [fOwner.fProcessName, self, ToText(fProcess)^]);
   fOwner.NotifyThreadStart(self);
   try
-    idletix := mormot.core.os.GetTickCount64 + 1000;
+//    idletix := mormot.core.os.GetTickCount64 + 1000;
     while not Terminated and
           (fOwner.fClients <> nil) do
     begin
         case fProcess of
           pseRead:
             begin
-              fOwner.fClients.ProcessRead(1000);
-              if (mormot.core.os.GetTickCount64 >= idletix) then
-              begin
-                fOwner.IdleEverySecond; // may take some time -> retrieve ticks again
-                idletix := mormot.core.os.GetTickCount64 + 1000;
-              end;
+              fOwner.fClients.ProcessRead(30000);
+//              if (mormot.core.os.GetTickCount64 >= idletix) then
+//              begin
+//                fOwner.IdleEverySecond; // may take some time -> retrieve ticks again
+//                idletix := mormot.core.os.GetTickCount64 + 1000;
+//              end;
             end;
           pseWrite:
-            fOwner.fClients.ProcessWrite(1000);
+            fOwner.fClients.ProcessWrite(30000);
           pseError:
             begin
               fOwner.IdleEverySecond; // may take some time -> retrieve ticks again
@@ -968,11 +1016,11 @@ begin
   fOptions := aOptions;
   inherited Create(false, OnStart, OnStop, ProcessName);
 
-  SetLength(fThreads, aThreadPoolCount + 1);
+  SetLength(fThreads, aThreadPoolCount + 2);
   fThreads[0] := TAsyncConnectionsThread.Create(self, pseWrite);
-  //fThreads[1] := TAsyncConnectionsThread.Create(self,pseError);
+  fThreads[1] := TAsyncConnectionsThread.Create(self,pseError);
   for i := 1 to aThreadPoolCount do
-    fThreads[i] := TAsyncConnectionsThread.Create(self, pseRead);
+    fThreads[i+1] := TAsyncConnectionsThread.Create(self, pseRead);
 end;
 
 destructor TAsyncConnections.Destroy;
@@ -1111,6 +1159,7 @@ begin
   conn := ConnectionFindLocked(aHandle, @i);
   if conn <> nil then
   try
+//    conn.onclose
     if not fClients.Stop(conn) then
       fLog.Add.Log(sllDebug, 'ConnectionRemove: Stop=false for %', [conn], self);
     result := ConnectionDelete(conn, i);
@@ -1345,6 +1394,34 @@ begin
   end;
   fLog.Add.Log(sllDebug, 'Execute: % done', [fProcessName], self);
   fExecuteFinished := true;
+end;
+
+{ TServerGeneric }
+
+constructor TServerGeneric.Create(CreateSuspended: boolean; const OnStart,
+  OnStop: TOnNotifyThread; const ProcessName: RawUtf8);
+begin
+  fProcessName := ProcessName;
+  fOnHttpThreadStart := OnStart;
+  SetOnTerminate(OnStop);
+  inherited Create(CreateSuspended);
+end;
+
+procedure TServerGeneric.NotifyThreadStart(Sender: TSynThread);
+begin
+  if Sender = nil then
+    raise EAsyncConnections.CreateUtf8('%.NotifyThreadStart(nil)', [self]);
+  if Assigned(fOnHttpThreadStart) and
+     not Assigned(Sender.StartNotified) then
+  begin
+    fOnHttpThreadStart(Sender);
+    Sender.StartNotified := self;
+  end;
+end;
+
+procedure TServerGeneric.SetOnTerminate(const Event: TOnNotifyThread);
+begin
+  fOnThreadTerminate := Event;
 end;
 
 end.

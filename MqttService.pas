@@ -30,7 +30,7 @@ type
   private
     FClientId:RawByteString;
     FWillTopic,FWillMessage:RawByteString;
-    FSubTitle:TShortStringDynArray;  
+    FSubTitle:TShortStringDynArray;
   protected
     function DoParsePacket(Sender: TAsyncConnections;MsgType:Byte;Payload:RawByteString):integer;
 
@@ -43,6 +43,7 @@ type
     constructor Create(const aRemoteIP: RawUtf8); override;
   published
     property ClientId:RawByteString read FClientId;
+    property SubTitle:TShortStringDynArray read FSubTitle;
   end;
 
   TMQTTServer = class(TAsyncServer)
@@ -56,6 +57,8 @@ type
       aLog: TSynLogClass; const aOnStart, aOnStop: TOnNotifyThread;
       aOptions: TAsyncConnectionsOptions = []); reintroduce;
     destructor Destroy; override;
+
+    procedure WritePublic(t,c:RawByteString);
   end;
 
 
@@ -305,24 +308,8 @@ begin
 end;
 
 procedure TMQTTConnection.WritePublic(Sender: TAsyncConnections; t,c: RawByteString);
-var
-  i:integer;
-  aconn: TMQTTConnection;
-  frame:RawByteString;
 begin
-  frame := #$30 + mqtt_get_lenth(length(t)+length(c)+2) + mqtt_get_strlen(length(t)) + t + c;
-  Sender.Lock;
-  try
-    for i := 0 to Sender.ConnectionCount-1 do
-    begin
-      aconn := Sender.Connection[i] as TMQTTConnection;
-      //if aconn=self then Continue;
-      if mqtt_compareTitle(t,aconn.FSubTitle) then
-        Sender.Write(aconn, frame);
-    end;
-  finally
-    Sender.Unlock;
-  end;
+  TMQTTServer(sender).WritePublic(t,c);
 end;
 
 procedure TMQTTConnection.WriteSelfAck2(Sender: TAsyncConnections; p: RawByteString);
@@ -361,7 +348,7 @@ constructor TMQTTServer.Create(
   const aOnStart, aOnStop: TOnNotifyThread; aOptions: TAsyncConnectionsOptions);
 begin
   fLog := aLog;
-  inherited Create(aHttpPort, aOnStart, aOnStop, TMQTTConnection, 'MQTTSvr', aLog, aOptions,22);
+  inherited Create(aHttpPort, aOnStart, aOnStop, TMQTTConnection, 'MQTTSvr', aLog, aOptions,4);
   ServerSocket.OnLog := OnClientsLogs;
 end;
 
@@ -400,6 +387,27 @@ procedure TMQTTServer.OnClientsLogs(Level: TSynLogInfo; const Fmt: RawUtf8;
   const Args: array of const; Instance: TObject);
 begin
   Log.Add.Log(Level, Fmt, Args, Instance);
+end;
+
+procedure TMQTTServer.WritePublic(t,c: RawByteString);
+var
+  i:integer;
+  aconn: TMQTTConnection;
+  frame:RawByteString;
+begin
+  frame := #$30 + mqtt_get_lenth(length(t)+length(c)+2) + mqtt_get_strlen(length(t)) + t + c;
+  Lock;
+  try
+    for i := 0 to ConnectionCount-1 do
+    begin
+      aconn := Connection[i] as TMQTTConnection;
+      //if aconn=self then Continue;
+      if mqtt_compareTitle(t,aconn.FSubTitle) then
+        Write(aconn, frame);
+    end;
+  finally
+    Unlock;
+  end;
 end;
 
 end.

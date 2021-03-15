@@ -95,7 +95,7 @@ procedure TMQTTHttpServer.getclients(Ctxt: TRestServerUriContext);
 begin
   fmqttserver.Lock;
   try
-    Ctxt.Returns(ObjArrayToJson(fmqttserver.Connection));
+    Ctxt.Returns(ObjArrayToJson(fmqttserver.Connection,[woDontStoreDefault,woEnumSetsAsText]));
   finally
     fmqttserver.Unlock;
   end;
